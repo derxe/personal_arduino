@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Furnace Control</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        header {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .temperature-display {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .temperature {
+            background: #fff;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+        }
+
+        .status {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: green;
+        }
+
+        .status.off {
+            color: red;
+        }
+
+        button {
+            background-color: #007BFF;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1rem;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        footer {
+            margin-top: 20px;
+            font-size: 0.9rem;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <header>Ogrevanje Kropa 84</header>
+
+    <div class="temperature-display">
+        <div class="temperature" id="temp1">Temperature 1: --°C</div>
+        <div class="temperature" id="temp2">Temperature 2: --°C</div>
+        <div class="temperature" id="temp3">Temperature 3: --°C</div>
+    </div>
+
+    <div class="status" id="furnace-status">Furnace is OFF</div>
+
+    <button onclick="toggleFurnace()" id="toggle-btn">Turn ON</button>
+
+    <footer>Powered by ESP8266</footer>
+
+    <script>
+        function updateStatus(isOn) {
+            const statusEl = document.getElementById('furnace-status');
+            const buttonEl = document.getElementById('toggle-btn');
+
+            if (isOn) {
+                statusEl.textContent = 'Peč GORI';
+                statusEl.classList.remove('on');
+                buttonEl.textContent = 'Ugasni';
+            } else {
+                statusEl.textContent = 'Peč IZKLOPLJENA';
+                statusEl.classList.add('off');
+                buttonEl.textContent = 'Vklopi';
+            }
+        }
+
+        function toggleFurnace() {
+            fetch('/toggle-furnace', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus(data.isOn);
+                })
+                .catch(error => console.error('Error toggling furnace:', error));
+        }
+
+        // Example function to simulate fetching initial data
+        function fetchInitialData() {
+            fetch('/furnace-status')
+                .then(response => response.json())
+                .then(data => {
+                    updateStatus(data.isOn);
+                    document.getElementById('temp1').textContent = `Temperature 1: ${data.temp1 || '--'}°C`;
+                    document.getElementById('temp2').textContent = `Temperature 2: ${data.temp2 || '--'}°C`;
+                    document.getElementById('temp3').textContent = `Temperature 3: ${data.temp3 || '--'}°C`;
+                })
+                .catch(error => console.error('Error fetching data:', error));
+        }
+
+        // Fetch initial data on page load
+        fetchInitialData();
+    </script>
+</body>
+</html>

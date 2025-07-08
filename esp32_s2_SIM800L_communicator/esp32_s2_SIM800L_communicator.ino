@@ -1,7 +1,7 @@
 #include <SoftwareSerial.h>
 #include "Button2.h"
 #include "esp_timer.h"
-#include <UartPrint.h>
+#include <SerialMod0.h>
 #include "AS5600.h"
 #include <Wire.h>
 
@@ -9,8 +9,8 @@
 
 #define UART_DEBUG_TX  13
 #define UART_DEBUG_RX  14
-//UartPrint SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
-#define SerialDBG Serial
+SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
+#define SerialDBG SerialUart0
 #define Serial_print(x)    do { SerialDBG.print(x); /* Serial1.print(x);*/ } while (0)
 #define Serial_println(x)  do { SerialDBG.println(x); /* Serial1.println(x);*/ } while (0)
 #define Serial_write(x)  do { SerialDBG.write(x); /*Serial1.write(x);*/ } while (0)
@@ -50,7 +50,6 @@ portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t lastNow = 0;
 
 void IRAM_ATTR onReadDirection(void* arg);
-void IRAM_ATTR onReadPhotoresitor(void* arg);
 void IRAM_ATTR onReadHal(void* arg);
 void IRAM_ATTR onReadSpeed(void* arg);
 void IRAM_ATTR onBlinkLed(void* arg);
@@ -70,7 +69,7 @@ void setup() {
   //pinMode(TIMER_PIN, OUTPUT); digitalWrite(TIMER_PIN, LOW);
   pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
   gpio_set_drive_capability((gpio_num_t) VANE_POWER_PIN, GPIO_DRIVE_CAP_3);
-  pinMode(HAL_SENSOR_PIN, INPUT);
+  pinMode(HAL_SENSOR_PIN, INPUT_PULLUP);
 
   button.begin(BUTTON_PIN);
   button.setPressedHandler(tap);
@@ -98,17 +97,7 @@ void setup() {
   esp_timer_handle_t hal_timer;
   esp_timer_create(&hal_timer_args, &hal_timer);
   esp_timer_start_periodic(hal_timer, 4*1000);  // every 4 ms
-/*
-  const esp_timer_create_args_t periodic_timer_args = {
-    .callback = &onReadPhotoresitor,
-    .arg = NULL,
-    .dispatch_method = ESP_TIMER_TASK,
-    .name = "1ms_timer"
-  };
-  esp_timer_handle_t periodic_timer;
-  esp_timer_create(&periodic_timer_args, &periodic_timer);
-  esp_timer_start_periodic(periodic_timer, 2000);  // 1000 µs = 1 ms
-*/
+
   esp_timer_handle_t blinkLed_timer;
   const esp_timer_create_args_t blinkLed_args = {
     .callback = &onBlinkLed,
@@ -287,56 +276,6 @@ void IRAM_ATTR onReadHal(void* arg) {
   digitalWrite(TIMER_PIN, LOW); 
 }
 
-
-void IRAM_ATTR onReadPhotoresitor(void* arg) {
-  digitalWrite(TIMER_PIN, HIGH);
-  static int rotationStateToCount = 0; // which state are we currently counting, so if we are in state 1 we need to count 3 of those states in order to register success 
-  static int rotationsCount = 0;       // how many rotations were counted 
-
-  int diff_value = 0;
-  int rotationState = 0;
-  switch (timerState) {
-    case 0:
-      photo_start_value = analogRead(ANALOG_PIN);
-      digitalWrite(LED_PIN, LOW);
-      break;
-
-    case 1: 
-      diff_value = analogRead(ANALOG_PIN) - photo_start_value;
-      digitalWrite(LED_PIN, HIGH);
-      rotationState = diff_value > 100;
-      if (rotationStateToCount == rotationState) {
-        rotationsCount += 1;
-      } else {
-        rotationsCount = 0;
-      }
-
-      if(rotationsCount == 2) { // make sure that there are 3 of the same state in order to register change
-        rotationsCount = 0;
-        rotationStateToCount = !rotationStateToCount; // now we count the oposite state
-
-        //Serial_print("|");
-        uint32_t now = micros() / 1000;
-
-        portENTER_CRITICAL_ISR(&timerMux);
-        rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
-        rotation_detected_blink = 1;
-
-        rps += 1000.0f / (now - lastDetection);
-        portEXIT_CRITICAL_ISR(&timerMux);
-        lastDetection = now; 
-      }
-      break;
-
-    default:
-    break;
-  }
-  timerState = (timerState+1) % 5;
-
-  digitalWrite(TIMER_PIN, LOW);  
-}
-
-
 // read speed every second
 void IRAM_ATTR onReadSpeed(void* arg) {
   portENTER_CRITICAL_ISR(&timerMux);
@@ -385,29 +324,12 @@ void loop() {
     lastSend = millis();
   }
 
-/*
-  if(millis() - lastPrint > 500) {
-    //Serial.print(as5600.readAngle());
-    //Serial.print(" ");
-    //Serial.print(digitalRead(HAL_SENSOR_PIN));
-    //Serial.println();
-
-    Serial_print("Directions:");
-    for(int i=0; i < DIRECTIONS_LOG_LEN; i++) {
-      Serial_print(directions_log[i]); Serial_print(";");
-    }
-    Serial_println();
-    lastPrint = millis();
-  }
-*/
   lastNow = millis();
 
   //updateSerial();
 
-  delay(1);
-  //esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 1 seconds sleep 
-  
-  //esp_deep_sleep_start();
+  //delay(1);
+  esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 1 seconds sleep 
 }
 
 double read_batt_v() {
@@ -474,8 +396,8 @@ void fullCycleSend() {
 
 
 void tap(Button2& btn) {
-  Serial_print("v batt:"); Serial_println(read_batt_v());
-  Serial_print("v solar:"); Serial_println(read_solar_v());
+  Serial_print("v batt:"); Serial_println(String(read_batt_v(), 2));
+  Serial_print("v solar:"); Serial_println(String(read_solar_v(), 2));
   Serial_println(getWindSpeeds());
   Serial_println(getDirections());
 
@@ -490,24 +412,25 @@ void tap(Button2& btn) {
     Serial_print(directions_log[i]); Serial_print(";");
   }
   Serial_println();
+
+  fullCycleSend();
 }
-  
-  /*
+
+String inputBuffer = "";
 bool updateSerial() {
   delay(100);
-  String inputBuffer = "";
-
+  
   while (SerialDBG.available()) {
     char c = SerialDBG.read();
+    SerialDBG.write(c);
     //Serial_print("read:'");
     //Serial_print(c);
     //Serial_println("'");
-    inputBuffer += c;
 
     if (c == '\n' || c == '\r') {
       Serial_print("Command:'");
       Serial_print(inputBuffer);
-      Serial_println("'");
+      Serial_print("'\r\n");
 
       if (inputBuffer[0] == 'o' || inputBuffer[0] == 'O') {
         turnOnModule();
@@ -521,16 +444,26 @@ bool updateSerial() {
       }
       
       inputBuffer = "";
+    } else {
+      inputBuffer += c;
     }
   }
 
+  String atResponse = "";
   while (SerialAT.available()) {
-    SerialDBG.write(SerialAT.read());  //Forward what Software Serial received to Serial Port
+    //Forward what Software Serial received to Serial Port
+    char atRead = SerialAT.read();
+    atResponse += atRead;
+  }
+  if(atResponse.length() > 0) {
+    SerialDBG.print("AT:");
+    SerialDBG.print(atResponse);
+    SerialDBG.println();
   }
 
   return true;
 }
-*/
+
 String sendCommand(const String& command, int timeoutMs = 1000, String expectedResponse = "OK") {
   SerialAT.println(command);
   //Serial_print("#Command: ");

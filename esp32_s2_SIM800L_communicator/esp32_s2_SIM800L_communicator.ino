@@ -190,9 +190,14 @@ String getDirections() {
   memcpy(directions_avg_copy, directions_avg, directions_copy_len * sizeof(directions_avg[0]));
   portEXIT_CRITICAL(&timerMux);
 
-  String directions = "";
-  for(int i=0; i<directions_copy_len; i++) {
-    directions += String(directions_avg_copy[i]) + ";";
+  if(directions_copy_len == 0) {
+    return "";
+  }
+
+  String directions = String(directions_avg_copy[0]);
+  for (int i = 1; i < directions_copy_len; i++) {
+    directions += ",";
+    directions += String(directions_avg_copy[i]);
   }
 
   return directions; 
@@ -398,8 +403,8 @@ void fullCycleSend() {
 void tap(Button2& btn) {
   Serial_print("v batt:"); Serial_println(String(read_batt_v(), 2));
   Serial_print("v solar:"); Serial_println(String(read_solar_v(), 2));
-  Serial_println(getWindSpeeds());
-  Serial_println(getDirections());
+  Serial_println("avg=" + getWindSpeeds());
+  Serial_println("dirs=" + getDirections());
 
   Serial_print("Winds");
   for(int i=0; i < SPEEDS_LOG_LEN; i++) {
@@ -628,21 +633,26 @@ String getWindSpeeds() {
   memcpy(speeds_max_copy, speeds_max, speeds_copy_len * sizeof(speeds_max[0]));
   portEXIT_CRITICAL(&timerMux);
 
-  String windSpeeds = "avg:";
-  //windSpeeds += "t:" + String(speeds_avg_time_start);
-  for(int i=0; i<speeds_copy_len-1; i++) {
-    windSpeeds += String(speeds_avg_copy[i]) + ".";
+  // TODO add when the data was added ike the time when the first data was recorder
+
+  if(speeds_copy_len == 0) {
+    return "avg=;max=";
   }
-  windSpeeds += String(speeds_avg_copy[speeds_copy_len-1]);
 
-  windSpeeds += ";max:";
-  for(int i=0; i<speeds_copy_len-1; i++) {
-    windSpeeds += String(speeds_max_copy[i]) + ".";
+  String windSpeeds = "avg=";
+  windSpeeds += String(speeds_avg_copy[0]);
+  for(int i=1; i<speeds_copy_len; i++) {
+    windSpeeds += ",";
+    windSpeeds += String(speeds_avg_copy[i]);
   }
-  windSpeeds += String(speeds_max_copy[speeds_copy_len-1]);
-  windSpeeds += ";";
 
-
+  windSpeeds += ";max=";
+  windSpeeds += String(speeds_max_copy[0]);
+  for(int i=0; i<speeds_copy_len; i++) {
+    windSpeeds += ",";
+    windSpeeds += String(speeds_max_copy[i]);
+  }
+  
   return windSpeeds; 
 }
 
@@ -656,7 +666,7 @@ String getPostBody() {
   body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
   body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
   body += "dirs=" + getDirections() + ";";
-  body += "avg=" + getWindSpeeds() + ";";
+  body += getWindSpeeds() + ";"; 
 
   return body;
 }

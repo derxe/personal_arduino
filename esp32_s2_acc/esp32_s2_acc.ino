@@ -14,12 +14,12 @@ BMP280_DEV bmp280;
 bool blinkState = false;
 
 void SetBestOffsets() {
-    accelgyro.setXAccelOffset(  -4133 );
-    accelgyro.setYAccelOffset( -1706 );
-    accelgyro.setZAccelOffset(  527 );
-    accelgyro.setXGyroOffset(   58 );
-    accelgyro.setYGyroOffset(   -20 );
-    accelgyro.setZGyroOffset(    49 );
+    accelgyro.setXAccelOffset( -4070 );
+    accelgyro.setYAccelOffset( -1753 );
+    accelgyro.setZAccelOffset(  543 );
+    accelgyro.setXGyroOffset(   41 );
+    accelgyro.setYGyroOffset(  -20 );
+    accelgyro.setZGyroOffset(   35 );
 }
 
 void printOffsets() {
@@ -102,7 +102,7 @@ float readAltitude() {
 void setup() {
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
-        Wire.begin();
+        Wire.begin(11, 10);
     #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
         Fastwire::setup(400, true);
     #endif
@@ -122,10 +122,36 @@ void setup() {
     Serial.println(accelgyro.testConnection() ? "MPU6050 connection successful" : "MPU6050 connection failed");
     accelgyro.setFullScaleAccelRange(MPU6050_ACCEL_FS_8);
     SetBestOffsets();
-    accelgyro.setDLPFMode(MPU6050_DLPF_BW_42);
+    accelgyro.setDLPFMode(MPU6050_DLPF_BW_98); // set digital low pass fileter to 100 Hz
+    accelgyro.setRate(9); // Sample Rate = 1000 / (1 + SMPLRT_DIV)   9 -> 100 Hz
 
     setupKalman(readAltitude());
     pinMode(LED_PIN, OUTPUT);
+}
+
+void printAccGyroValues() {
+    accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    /*
+    float devider = 16384 >> accelgyro.getFullScaleAccelRange();
+    float accX = ax / devider;
+    float accY = ay / devider;
+    float accZ = az / devider;
+
+    devider = 16384 >> accelgyro.getFullScaleGyroRange();
+    float gyroX = gx / devider;
+    float gyroY = gy / devider;
+    float gyroZ = gz / devider;
+    */
+
+    Serial.print(accelgyro.getXGyroFIFOEnabled());
+    Serial.print(" "); Serial.print(ax); Serial.print("/");
+    Serial.print(""); Serial.print(ay); Serial.print("/");
+    Serial.print(""); Serial.print(az); Serial.print("/");
+
+    Serial.print(""); Serial.print(gx); Serial.print("/");
+    Serial.print(""); Serial.print(gy); Serial.print("/");
+    Serial.print(""); Serial.print(gz); Serial.println("");
+
 }
 
 float getAcc() {
@@ -134,6 +160,10 @@ float getAcc() {
     float accX = ax / devider;
     float accY = ay / devider;
     float accZ = az / devider;
+
+    Serial.print(""); Serial.print(accX); Serial.print("/");
+    Serial.print(""); Serial.print(accY); Serial.print("/");
+    Serial.print(""); Serial.print(accZ); Serial.println("");
 
     float roll = atan2(accY, accZ);
     float pitch = atan2(-accX, sqrt(accY * accY + accZ * accZ));
@@ -266,7 +296,11 @@ void kalman_3d() {
 // Main loop: read sensors, update the Kalman filter, and print the results
 //
 void loop() {
-  getAcc(); 
+  //getAcc(); 
+  Serial.print(readPressure()); Serial.print(" ");
+  printAccGyroValues();
+
+  delay(50);
   return; 
   
   long measureStart = micros();

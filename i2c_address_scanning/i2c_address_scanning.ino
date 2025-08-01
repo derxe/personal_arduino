@@ -7,8 +7,8 @@ void doScan() {
   Serial.println ("I2C scanner. Scanning ...");
   byte count = 0;
   // 0x27 0x3F
-  Wire.begin(SDA_PIN, SCL_PIN);
-  //Wire.begin();
+  //Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.begin();
   for (byte i = 8; i < 120; i++)
   {
     Serial.print(".");

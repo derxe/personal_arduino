@@ -172,8 +172,8 @@ void setup() {
   // crystal solution for the UART timer.
 
   WiFi.mode(WIFI_STA);  // Optional, forces station mode
-  WiFi.begin("kuhna-wifi", "");
-  //WiFi.begin("tony-lenovo", "8uPj1P0d");
+  //WiFi.begin("kuhna-wifi", "");
+  WiFi.begin("tony-lenovo", "8uPj1P0d");
 
   Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED) {
@@ -281,8 +281,8 @@ void readSerial() {
 
 
 WiFiUDP Udp;                             // A UDP instance to let us send and receive packets over UDP
-const IPAddress outIp(192, 168, 0, 121);     // remote IP to receive OSC
-//const IPAddress outIp(10, 42, 0, 1);  
+//const IPAddress outIp(192, 168, 0, 121);     // remote IP to receive OSC
+const IPAddress outIp(10, 42, 0, 1);  
 const unsigned int outPort = 9999;          // remote port to receive OSC
 
 

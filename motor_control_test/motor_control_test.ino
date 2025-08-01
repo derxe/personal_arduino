@@ -101,8 +101,12 @@ void setup() {
 }
 
 int speedToMotorPower(int speed) {
-  if(speed <= 15) return 0; // we cant really spin that slowly so we just return 0
-
+  int direction = speed < 0? -1 : 1;
+  speed = abs(speed);
+  if(speed <= 15) {
+    Serial.print("Setting speed 0");
+    return 0; // we cant really spin that slowly so we just return 0
+  }
   // posible speeds from 30 to 100 other speeds are not really achivable 
   double a = 0.00012159;
   double b =-0.00629095;
@@ -110,12 +114,16 @@ int speedToMotorPower(int speed) {
   double speedD = speed;
 
   int motorPower = a * speedD*speedD*speedD + b*speedD*speedD + c*speedD + 15;
+  motorPower *= direction;
+  speed *= direction;
+
+  
 
   Serial.print("Motor power:"); Serial.print(motorPower); 
   Serial.print(" for speed:"); Serial.print(speed);
   Serial.println();
   
-  return motorPower;
+  return  motorPower;
 }
 
 // motorPower from -100 to +100
@@ -167,10 +175,20 @@ void updateMotorPower() {
 }
 
 static bool blinkLedState = false;
+int prevCount = 0;
+int distanceCount = 0;
+int prevDirection = 1;
+long motorOnDuration = 0;
 
 void loop() {
   button.loop();
   button2.loop();
+
+  if(millis() - motorOnDuration > 0) {
+    setMotorPower(0);
+    motorOnDuration = -1;
+  }
+
   updateMotorPower();
   readSpeedFromSerial();
 
@@ -180,9 +198,7 @@ void loop() {
     
     unsigned long timestamp = millis() - showingSpeedStart;
 
-    static int prevCount = 0;
-    static int distanceCount = 0;
-    static int prevDirection = 1;
+
 
     int16_t count = pulseCount;
 
@@ -226,10 +242,12 @@ void readSpeedFromSerial() {
       if (input.length() > 0) {
         int speed = input.toInt();  // Handles signs too
         setMotorSpeed = speed;
+        motorOnDuration = millis() + 2000;
         int motorPower = speedToMotorPower(speed);
         setMotorPower(motorPower);
         input = "";
       } else {
+        distanceCount = 0;
         isShowingSpeed = !isShowingSpeed;
         tp.DotStar_SetPower(isShowingSpeed);
         blinkLedState = false;

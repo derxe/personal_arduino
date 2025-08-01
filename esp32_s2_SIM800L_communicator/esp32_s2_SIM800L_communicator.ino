@@ -4,7 +4,7 @@
 #include <SerialMod0.h>
 #include "AS5600.h"
 #include <Wire.h>
-
+#include <TimeLib.h>
 
 
 #define UART_DEBUG_TX  13
@@ -32,13 +32,30 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX);
 #define VANE_POWER_PIN    1
 #define HAL_SENSOR_PIN    4
 
-#define TIMER_PIN 14
+//#define TIMER_PIN 14
 
 // Define a custom TwoWire instance
 #define SDA_GPIO             10
-#define SCL_GPIO             8
-#define AS600_POWER_MOS_PIN  6
+#define SCL_GPIO             8      
+#define AS600_POWER_PIN  6
 AS5600 as5600; 
+
+
+/*
+ORANGE    10  SDA_GPIO
+YELLOW    8   SCL_GPIO
+GREEN     6   AS600_POWER_PIN
+BROWN     4   HAL_SENSOR_PIN
+RED       1   VANE_POWER_PIN
+
+3v3  red
+GND  white
+as5600 power green
+scl yellow
+sda orange
+hal pin brown
+
+*/
 
 #define LED_PIN 9
 #define ANALOG_PIN 123
@@ -56,9 +73,27 @@ void IRAM_ATTR onBlinkLed(void* arg);
 void IRAM_ATTR onSpinLed(void* arg);
 void tap(Button2& btn);
 
+#define DEEP_SLEEP_DURATION  3600ULL * 1000000 // value in microseconds so: one hour
+//#define DEEP_SLEEP_DURATION  10 * 1000 * 1000  // 10 seconds
+RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
+
+
 void setup() {
   //Serial.begin(115200);
   SerialDBG.begin(115200);
+  Serial_println();
+  Serial_println("### PROGRAM START! ###");
+
+  if(timeBeforeSleep == 0) {
+    Serial_println("Fresh start. Normal boot");
+  } else {
+    // timeWas set before sleep so we can check if is time to wake up already!
+    setTime(timeBeforeSleep + DEEP_SLEEP_DURATION / 1000000);
+    Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeString());
+    evaluateIfDeepSleep();
+  }
+
+
   SerialAT.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN); // 33, 34);
 
   pinMode(LED_PIN, OUTPUT); digitalWrite(LED_PIN, HIGH);
@@ -69,6 +104,10 @@ void setup() {
   //pinMode(TIMER_PIN, OUTPUT); digitalWrite(TIMER_PIN, LOW);
   pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
   gpio_set_drive_capability((gpio_num_t) VANE_POWER_PIN, GPIO_DRIVE_CAP_3);
+
+  pinMode(AS600_POWER_PIN, OUTPUT); digitalWrite(AS600_POWER_PIN, LOW);  
+  //gpio_set_drive_capability((gpio_num_t) AS600_POWER_PIN, GPIO_DRIVE_CAP_3);
+
   pinMode(HAL_SENSOR_PIN, INPUT_PULLUP);
 
   button.begin(BUTTON_PIN);
@@ -155,11 +194,12 @@ void IRAM_ATTR onReadDirection(void* arg) {
   Serial.flush();
   switch(directionReadCount) {
     case 1:
-      pinMode(AS600_POWER_MOS_PIN, OUTPUT);
+      digitalWrite(AS600_POWER_PIN, HIGH);
       break;
     
     case 2:
       angle = as5600.readAngle()*360 / 4096;
+      //Serial_print("Read angle: "); Serial_println(angle);
 
       portENTER_CRITICAL_ISR(&timerMux);
       directions_log[directions_log_i++] = angle;
@@ -170,7 +210,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
       }
       portEXIT_CRITICAL_ISR(&timerMux);
 
-      pinMode(AS600_POWER_MOS_PIN, HIGH);
+      digitalWrite(AS600_POWER_PIN, LOW);
       break;
 
     case 100:
@@ -261,9 +301,8 @@ volatile uint32_t lastDetection = 0;
 
 volatile int lastHalSensorRead = -1;
 void IRAM_ATTR onReadHal(void* arg) {
-  digitalWrite(TIMER_PIN, HIGH);
-  analogRead(2);
-  analogRead(2);
+  //digitalWrite(TIMER_PIN, HIGH);
+
   // Example logic: latch HAL sensor if triggered
   int halSensorRead = digitalRead(HAL_SENSOR_PIN);
   if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
@@ -273,12 +312,13 @@ void IRAM_ATTR onReadHal(void* arg) {
     rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
     rotation_detected_blink = 1;
 
+    //Serial_print("|");
     rps += 1000.0f / (now - lastDetection);
     portEXIT_CRITICAL_ISR(&timerMux);
     lastDetection = now; 
   }
   lastHalSensorRead = halSensorRead;
-  digitalWrite(TIMER_PIN, LOW); 
+  //digitalWrite(TIMER_PIN, LOW); 
 }
 
 // read speed every second
@@ -320,8 +360,33 @@ void IRAM_ATTR onReadSpeed(void* arg) {
 uint32_t lastSend = 0;
 uint32_t lastPrint = 0;
 
+bool isDeepSleepTime() {
+  return false;
+  if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
+
+  // we sleep at night ofcorse! from 8 PM to 6 AM
+  if(20 < hour() && hour() < 24) return true;
+  if(0 < hour() && hour() < 6) return true;
+
+  return false;
+}
+
+void evaluateIfDeepSleep() {
+  if(isDeepSleepTime()) {
+    Serial_print("Current time is:"); Serial_println(getFormattedTimeString());
+    Serial_print("It is time to go deep sleep for: "); Serial_print(DEEP_SLEEP_DURATION/(1000000*60)); 
+    Serial_print(" minutes!");
+    delay(500); // delay for all the Serial_prints to finish 
+
+    timeBeforeSleep = now();
+    esp_sleep_enable_timer_wakeup(DEEP_SLEEP_DURATION);
+    esp_deep_sleep_start();  // after this, it won't return here — will restart from setup()
+  }
+}
+
 void loop() {
   button.loop();
+  evaluateIfDeepSleep();
 
   if(millis() - lastSend > 10*60*1000) {
     Serial_print("10 min passed doing send");
@@ -332,8 +397,8 @@ void loop() {
   lastNow = millis();
 
   //updateSerial();
-
   //delay(1);
+  
   esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 1 seconds sleep 
 }
 
@@ -399,8 +464,7 @@ void fullCycleSend() {
   delay(1000);
 }
 
-
-void tap(Button2& btn) {
+void printDiagnosticInfo() {
   Serial_print("v batt:"); Serial_println(String(read_batt_v(), 2));
   Serial_print("v solar:"); Serial_println(String(read_solar_v(), 2));
   Serial_println("avg=" + getWindSpeeds());
@@ -417,6 +481,10 @@ void tap(Button2& btn) {
     Serial_print(directions_log[i]); Serial_print(";");
   }
   Serial_println();
+}
+
+void tap(Button2& btn) {
+  printDiagnosticInfo();
 
   fullCycleSend();
 }
@@ -441,11 +509,13 @@ bool updateSerial() {
         turnOnModule();
       } else if (inputBuffer[0] == 'x' || inputBuffer[0] == 'X') {
         turnOffModule();
-      } 
-      else if (inputBuffer[0] == 's' || inputBuffer[0] == 'S') {
+      } else if (inputBuffer[0] == 's' || inputBuffer[0] == 'S') {
         fullCycleSend();
+      } else if (inputBuffer[0] == 'i' || inputBuffer[0] == 'I') {
+        printDiagnosticInfo();
       } else {
-        SerialAT.write(inputBuffer.c_str());       //Forward what Serial received to Software Serial Port
+        SerialAT.println(inputBuffer.c_str());
+        //SerialAT.write(inputBuffer.c_str());       //Forward what Serial received to Software Serial Port
       }
       
       inputBuffer = "";
@@ -541,6 +611,44 @@ bool parseCGREGResponse(const String& response) {
   //Serial_println(regStatusToStr(status));
   Serial_print(status);
   return status == 1 || status == 5; // Registered (home or roaming)
+}
+
+String getFormattedTimeString() {
+  char buf[24];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
+           year(), month(), day(), hour(), minute(), second());
+  return String(buf);
+}
+
+bool parseCCLKResponse(const String& response) {
+  // expected response example: +CCLK: "25/08/01,00:19:52+08"
+  int idx = response.indexOf("CCLK:");
+  if (idx == -1) return false;
+
+  int quoteStart = response.indexOf('"', idx);
+  int quoteEnd = response.indexOf('"', quoteStart + 1);
+  if (quoteStart == -1 || quoteEnd == -1) return false;
+
+  String datetime = response.substring(quoteStart + 1, quoteEnd);  // "25/08/01,00:19:52+08"
+
+  // Split by delimiters: / , :
+  int year   = datetime.substring(0, 2).toInt() + 2000;
+  int month  = datetime.substring(3, 5).toInt();
+  int day    = datetime.substring(6, 8).toInt();
+  int hour   = datetime.substring(9, 11).toInt();
+  int minute = datetime.substring(12, 14).toInt();
+  int second = datetime.substring(15, 17).toInt();
+
+  // Check for default time (00/01/01 etc.)
+  if (year < 2023) return false;  // Reject obviously invalid time
+
+  // save the time inside the TimeLib library
+  setTime(hour, minute, second, day, month, year);
+
+  // Print the parsed time
+  Serial_print("Got date:"); Serial_println(getFormattedTimeString());
+  
+  return true;
 }
 
 bool parseHTTPREADResponse(const String& response) {
@@ -736,12 +844,14 @@ void runHttpGetHot() {
 
   if (!waitForResponse("AT+CSQ", 20, parseCSQResponse, 2000)) return;
   unsigned long start = millis();
-  if (!waitForResponse("AT+CREG?", 120, parseCGREGResponse, 4000)) return;
+  if (!waitForResponse("AT+CREG?", 120, parseCGREGResponse, 2000)) return;
   regDuration = millis() - start;
   
   start = millis(); 
-  if (!waitForResponse("AT+CGREG?", 120, parseCGREGResponse, 4000)) return;
+  if (!waitForResponse("AT+CGREG?", 120, parseCGREGResponse, 2000)) return;
   gprsRegDuration = millis() - start;
+
+  if (!waitForResponse("AT+CCLK?", 10, parseCCLKResponse, 2000)) return;
 
   // Step 1: Configure GPRS connection
   if (sendCommand("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", 1000) == "") return;

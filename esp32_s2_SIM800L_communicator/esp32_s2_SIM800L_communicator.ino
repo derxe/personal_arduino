@@ -77,12 +77,20 @@ void tap(Button2& btn);
 //#define DEEP_SLEEP_DURATION  10 * 1000 * 1000  // 10 seconds
 RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
 
+void printVersionAndCompileDate() {
+  Serial.print("Compiled on ");
+  Serial.print(__DATE__);
+  Serial.print(" at ");
+  Serial.println(__TIME__);
+}
 
 void setup() {
   //Serial.begin(115200);
   SerialDBG.begin(115200);
   Serial_println();
   Serial_println("### PROGRAM START! ###");
+  Serial_print("Compiled on "); Serial_println(__DATE__ " " __TIME__);
+  Serial_print("Version:"); Serial_println("0.1");
 
   if(timeBeforeSleep == 0) {
     Serial_println("Fresh start. Normal boot");
@@ -92,7 +100,6 @@ void setup() {
     Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeString());
     evaluateIfDeepSleep();
   }
-
 
   SerialAT.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN); // 33, 34);
 
@@ -116,14 +123,9 @@ void setup() {
   //button2.begin(BUTTON_PIN_2);
   //button2.setPressedHandler(tap2);
 
-  Serial_println("Waiting for RUN...");
-  Serial_println("Done init");
-  delay(400);
-
   // init the as5600 chip so we can read wind direction 
   Wire.begin(SDA_GPIO, SCL_GPIO); // 1 Mhz
   Wire.setClock(1000000UL);
-  Serial_println(as5600.getAddress());
 
   setCpuFrequencyMhz(80);
 
@@ -177,6 +179,7 @@ void setup() {
   esp_timer_create(&readDirection_args, &readDirection_timer);
   esp_timer_start_periodic(readDirection_timer, 10*1000); // 10 ms
 
+  Serial_println("Done init!");
 }
 
 
@@ -361,12 +364,11 @@ uint32_t lastSend = 0;
 uint32_t lastPrint = 0;
 
 bool isDeepSleepTime() {
-  return false;
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
 
   // we sleep at night ofcorse! from 8 PM to 6 AM
-  if(20 < hour() && hour() < 24) return true;
-  if(0 < hour() && hour() < 6) return true;
+  if(20 <= hour() && hour() <= 24) return true;
+  if(0 <= hour() && hour() < 6) return true;
 
   return false;
 }

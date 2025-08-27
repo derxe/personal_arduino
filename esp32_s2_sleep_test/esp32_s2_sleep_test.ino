@@ -1,4 +1,23 @@
 #include <Arduino.h>
+#include <esp_sleep.h>
+
+#define LED_PIN 15
+
+// Lives in RTC fast memory; survives deep sleep resets.
+RTC_DATA_ATTR bool led_on = false;
+
+void setup() {
+  setCpuFrequencyMhz(10);
+  
+  // Sleep for 1 second
+  esp_sleep_enable_timer_wakeup(10*1000000ULL);
+  esp_deep_sleep_start();
+}
+
+void loop() {} // never reached
+
+/*
+#include <Arduino.h>
 #include "esp_wifi.h"
 #include <WiFi.h>
 #include "Button2.h"
@@ -137,3 +156,5 @@ if (now - lastTimePrint >= 400) {
   button2.loop();
   button3.loop();
 }
+
+*/

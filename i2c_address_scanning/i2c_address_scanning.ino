@@ -2,14 +2,14 @@
 
 #ifdef USE_SOFTWARE_WIRE
   #include <SoftwareWire.h>
-  #define SDA_PIN 6
-  #define SCL_PIN 5
+  #define SDA_PIN 5
+  #define SCL_PIN 7
   SoftwareWire myWire(SDA_PIN, SCL_PIN);
   #define ACTIVE_WIRE myWire
 #else
   #include <Wire.h>
-  #define SDA_PIN 10
-  #define SCL_PIN 11
+  #define SDA_PIN 5
+  #define SCL_PIN 7
   #define ACTIVE_WIRE Wire
 #endif
 
@@ -20,7 +20,7 @@ void doScan() {
 #ifdef USE_SOFTWARE_WIRE
   ACTIVE_WIRE.begin();
 #else
-  ACTIVE_WIRE.begin(); 
+  ACTIVE_WIRE.begin(SDA_PIN, SCL_PIN); 
 #endif
 
   for (byte i = 8; i < 120; i++) {
@@ -43,7 +43,12 @@ void doScan() {
   Serial.println(" device(s).");
 }
 
+
+#define AS600_POWER_PIN      4
 void setup() {
+  pinMode(AS600_POWER_PIN, OUTPUT); digitalWrite(AS600_POWER_PIN, HIGH);  
+  gpio_set_drive_capability((gpio_num_t) AS600_POWER_PIN, GPIO_DRIVE_CAP_3);
+
   Serial.begin(115200);
   while (!Serial) delay(10);
 }

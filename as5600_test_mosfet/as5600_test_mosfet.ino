@@ -3,9 +3,9 @@
 #include <Wire.h>
 
 // Define a custom TwoWire instance
-#define SDA_GPIO 16
-#define SCL_GPIO 17
-#define AS600_POWER_MOS_PIN 5
+#define SDA_GPIO 5
+#define SCL_GPIO 7
+#define AS600_POWER_MOS_PIN 4
 AS5600 as5600;   
 
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -89,8 +89,9 @@ String getDirections() {
 void setup()
 {
   Serial.begin(115200);
+   esp_log_level_set("i2c.master", ESP_LOG_NONE); 
 
-  pinMode(AS600_POWER_MOS_PIN, OUTPUT); digitalWrite(AS600_POWER_MOS_PIN, HIGH); // off
+  pinMode(AS600_POWER_MOS_PIN, OUTPUT);
   digitalWrite(AS600_POWER_MOS_PIN, LOW); 
 
   Serial.println(__FILE__);
@@ -106,6 +107,7 @@ void setup()
   as5600.setPowerMode(0);
   Serial.println(as5600.getAddress());
 
+/*
   esp_timer_handle_t readDirection_timer;
   const esp_timer_create_args_t readDirection_args = {
     .callback = &onReadDirection,
@@ -115,7 +117,7 @@ void setup()
   };
   esp_timer_create(&readDirection_args, &readDirection_timer);
   esp_timer_start_periodic(readDirection_timer, directionReadTimerInterval);
-
+*/
   //as5600.setAddress(0x40);  //  AS5600L only
   /*
   int b; 
@@ -131,41 +133,64 @@ void setup()
 void loop()
 {
   static uint32_t lastTimeRead = 0;
+  uint32_t start, end;
 
 
   uint32_t now = millis();
-  if (now - lastTimeRead >= 1000)
+  if (now - lastTimeRead >= 200)
   {
     lastTimeRead = now;
+
+    /*
     for(int i=0; i < DIRECTIONS_LOG_LEN; i++) {
       Serial.print(directions_log[i]); Serial.print(";");
     }
-    uint32_t start = micros();
+    start = micros();
     float avg = average_direction(&directions_log[0], DIRECTIONS_LOG_LEN);
-    uint32_t end = micros();
+    end = micros();
     Serial.print("avg:"); Serial.print(avg);
     Serial.print(" Duration:"); Serial.print(end - start);
     Serial.print(getDirections());
     Serial.println();
+    */
 
-    /*
-    pinMode(AS600_POWER_MOS_PIN, OUTPUT);
+    start = micros();
+    digitalWrite(AS600_POWER_MOS_PIN, HIGH);
     int detectMagnet = 0;
     delay(5);
-    for(int i=0; i<20 && detectMagnet == 0; i++) {
+    int countFailedMagnetDetection = 0;
+    for(int i=0; i<50 && detectMagnet == 0; i++) {
       detectMagnet = as5600.detectMagnet();
-      Serial.print(detectMagnet); Serial.print(":");
+      countFailedMagnetDetection += 1;
       delayMicroseconds(100);
     }
-    
-    uint32_t start = micros();
-    int angle = as5600.readAngle()*360 / 4096;
-    uint32_t end = micros();
-    pinMode(AS600_POWER_MOS_PIN, HIGH);
 
-    Serial.print(angle); 
-    Serial.print(" Duration:"); Serial.println(end - start);
-    */
+    Serial.print(countFailedMagnetDetection); Serial.print(":");
+
+    delayMicroseconds(100);
+
+    delay(10);
+    
+    
+    int angle = as5600.readAngle()*360 / 4096;
+    delay(4);
+    int angle1 = as5600.readAngle()*360 / 4096;
+    delay(4);
+    int angle2 = as5600.readAngle()*360 / 4096;
+    delay(4);
+    int angle3 = as5600.readAngle()*360 / 4096;
+    end = micros();
+
+    Serial.print(" Angle: "); Serial.print(angle); Serial.print(","); Serial.print(angle1); Serial.print(","); Serial.print(angle2); Serial.print(","); Serial.print(angle3);
+    Serial.print(" Duration:"); Serial.print(end - start);
+    Serial.print(" readMagnitude:"); Serial.print(as5600.readMagnitude());
+    Serial.print(" detectMagnet:"); Serial.print(as5600.detectMagnet());
+    Serial.print(" magnetTooStrong:"); Serial.print(as5600.magnetTooStrong());
+    Serial.print(" magnetTooWeak:"); Serial.print(as5600.magnetTooWeak());
+    Serial.println();
+
+    digitalWrite(AS600_POWER_MOS_PIN, LOW);
+
   }
   
 }

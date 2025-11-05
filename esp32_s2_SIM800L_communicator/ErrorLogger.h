@@ -3,23 +3,30 @@
 
 class ErrorLogger {
 public:
+
     // --- Enum of all possible errors ---
     enum ErrorCode {
         ERR_NONE = 0,             // no error
-        ERR_DIR_READ,
-        ERR_SEND_AT_FAIL,
-        ERR_SEND_NO_SIM,
-        ERR_SEND_CSQ_FAIL,
-        ERR_SEND_REG_FAIL,
-        ERR_SEND_CIMI_FAIL,
-        ERR_SEND_GPRS_FAIL,
-        ERR_SEND_HTTP_FAIL,
-        ERR_SEND_REPEAT,
+        ERR_SEND_AT_FAIL,      // 1
+        ERR_SEND_NO_SIM,       // 2
+        ERR_SEND_CSQ_FAIL,     // 3     
+        ERR_SEND_REG_FAIL,     // 4 
+        ERR_SEND_CIMI_FAIL,    // 5 
+        ERR_SEND_GPRS_FAIL,    // 6 
+        ERR_SEND_HTTP_FAIL,    // 7 
+        ERR_SEND_REPEAT,       // 8 
+
+        ERR_DIR_READ,              // 9         
+        ERR_DIR_READ_ONCE,         // 10 
+        ERR_WIND_BUF_OVERWRITE,    // 11    
+        ERR_WIND_SHORT_BUF_FULL,   // 12         
+        ERR_SPEED_SHORT_BUF_FULL,  // 13         
+        ERR_DIR_SHORT_BUF_FULL,    // 14     
 
         // --- Power and reset related errors ---
-        ERR_POWERON_RESET,        // normal power-on reset (info)
-        ERR_BROWNOUT_RESET,       // brown-out or low-voltage reset
-        ERR_PANIC_RESET,          // software panic or abort
+        ERR_POWERON_RESET,        // 15 normal power-on reset (info)
+        ERR_BROWNOUT_RESET,       // 16 brown-out or low-voltage reset
+        ERR_PANIC_RESET,          // 17 software panic or abort
         ERR_WDT_RESET,            // watchdog reset (task/int/other)
         ERR_SDIO_RESET,           // reset triggered over SDIO
         ERR_USB_RESET,            // reset by USB peripheral
@@ -128,6 +135,7 @@ public:
             case ERR_PWR_GLITCH_RESET: return "Power glitch reset";
             case ERR_CPU_LOCKUP_RESET: return "CPU lockup/double exception reset";
             case ERR_UNEXPECTED_RESET: return "Unexpected/unclassified reset";
+            case ERR_DIR_READ_ONCE:    return "Read dir error had to be repeated.";
 
             default:                  return "Unknown ErrorCode";
         }

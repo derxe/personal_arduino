@@ -9,7 +9,64 @@
 #include <Preferences.h>
 #include "ErrorLogger.h"
 #include "ResetDiagnostics.h"
-#include "my_prefs.h"
+#include "MyPrefs.h"
+#include <string.h>  // for memcpy
+
+typedef struct {
+    uint16_t avg;
+    //uint16_t max; // we dont need to log max speed
+    int16_t dir;      // from 0 - 360, negative values for errors 
+    //uint16_t ts;   // we only log last and first log instead of logging every timestamp
+} WindSample;
+
+struct AppPrefs {
+  uint16_t pref_version;              // just an intiger to difirentiata between different versions 
+  char     version[8];                // program/sw version
+  char     url_to_send[70];           // url that is used to send the data to 
+
+  uint8_t  light_sleep_enabled;       // light sleep between reads, 0 if disabled, and 1 if enabled
+  uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled
+  int8_t   sleep_hour_start;          // which hour the device gets to sleep in 24 hour format 
+  int8_t   sleep_hour_end;            // which hour the device is expected to wake up again
+
+  uint8_t  store_wind_data_interval;  // how ofthen the values (speed and dir) are saved 
+  uint8_t  send_data_interval;        // in minutes, how often do we send the data 
+
+  uint8_t  error_led_on_time;    // in ms, how log the error led stays on when blinking 
+  uint8_t  dir_led_on_time;      // in ms, how log the direc led stays on when blinking 
+  uint8_t  spin_led_on_time;     // in ms, how log the spin  led stays on when blinking 
+  uint8_t  blink_led_on_time;    // in ms, how log the blink led stays on when blinking 
+  uint8_t  blink_led_interval;   // deca seconds 10 for 1 seconds, hof often the blink led blinks
+
+  uint8_t  as5600_pwr_on_time;   // ms of how long to wait after power on before reading it, It is also an interupt cycle
+  uint8_t  as5600_read_interval; // deca seconds 10 for 1 seconds, // how ofter we want to read direction
+};
+
+#define SCHEMA_VERSION  11
+
+// define default preferences:
+AppPrefs prefs = {
+  /*pref_version*/              2,
+  /*version*/                   "v2",
+  /*url_to_send*/               "http://46.224.24.144/veter/save/",
+
+  /*light_sleep_enabled*/       0,
+  /*sleep_enabled*/             0,
+  /*sleep_hour_start*/          20,
+  /*sleep_hour_end*/            6,
+
+  /*store_wind_data_interval*/  5,
+  /*send_data_interval*/        10,
+
+  /*error_led_on_time*/         10,
+  /*dir_led_on_time*/           10,
+  /*spin_led_on_time*/          20,
+  /*blink_led_on_time*/         20,
+  /*blink_led_interval*/        20,  
+
+  /*as5600_pwr_on_time*/        30,
+  /*as5600_read_interval*/      30
+};
 
 enum class SendResult : int {
   OK                   =  1,   // success
@@ -50,118 +107,23 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX);
 #define V_SOALR_PIN      8
 
 #define BLINK_LED_PIN      15
-#define BLINK_LED_ON_TIME  20    
-#define BLINK_LED_INTERVAL 2000  
+//#define BLINK_LED_ON_TIME  20    
+//#define BLINK_LED_INTERVAL 2000  
 
 #define SPIN_LED_PIN       3
-#define SPIN_LED_ON_TIME   20   
+//#define SPIN_LED_ON_TIME   20   
 
 #define DIR_LED_PIN        2
-#define DIR_LED_ON_TIME    10
+//#define DIR_LED_ON_TIME    10
 
 #define ERROR_LED_PIN      1
-#define ERROR_LED_ON_TIME  10
+//#define ERROR_LED_ON_TIME  10
 
 //#define VANE_POWER_PIN   1
 #define HAL_SENSOR_PIN     12
 
+//#define STORE_WIND_DATA_INTERVAL 5 // save data each X seconds 
 
-struct AppSettings {
-    // --- Preferences Keys ---
-    // A unique identifier to check if settings have been saved before.
-    // Changing this number forces the defaults to be loaded on next boot.
-    const uint32_t MAGIC_NUMBER = 0xAA55AA55; 
-    
-    // --- Actual Settings ---
-    char deviceName[16] = "ESP-Device"; // Name for Wi-Fi or identification
-    int maxMotorSpeed = 1024;           // Max speed value (e.g., for PWM/DAC)
-    float temperatureOffset = 1.5f;     // Calibration offset
-    bool enableAutoMode = true;         // Flag for automatic operation
-};
-
-/**
- * @brief Manages reading and writing application settings to ESP32 NVS.
- */
-class PreferenceManager {
-public:
-    // Singleton pattern to ensure only one instance
-    static PreferenceManager& getInstance() {
-        static PreferenceManager instance; // Guaranteed to be destroyed and instantiated once
-        return instance;
-    }
-
-    // Settings structure instance
-    AppSettings settings;
-
-    /**
-     * @brief Loads settings from NVS, or loads defaults if NVS is empty/invalid.
-     */
-    void loadPreferences() {
-        // Open the preferences namespace
-        if (!preferences.begin("app-settings", false)) {
-            Serial.println("FATAL: Failed to open Preferences namespace.");
-            // Keep going, but settings will be defaults
-            return;
-        }
-
-        // 1. Check if the magic number exists
-        uint32_t magic = preferences.getUInt("magic", 0);
-
-        if (magic == settings.MAGIC_NUMBER) {
-            // Settings exist and are valid. Load them.
-            Serial.println("Preferences found. Loading stored values...");
-            
-            // Load primitive types
-            settings.maxMotorSpeed = preferences.getInt("maxSpeed", settings.maxMotorSpeed);
-            settings.temperatureOffset = preferences.getFloat("tempOffset", settings.temperatureOffset);
-            settings.enableAutoMode = preferences.getBool("autoMode", settings.enableAutoMode);
-
-            // Load string/char array
-            preferences.getString("devName", settings.deviceName, sizeof(settings.deviceName));
-            
-        } else {
-            // Settings are invalid or missing. Save the current defaults.
-            Serial.println("No valid preferences found. Saving defaults...");
-            savePreferences();
-        }
-
-        // Close the preferences
-        preferences.end();
-    }
-
-    /**
-     * @brief Saves the current settings to NVS.
-     */
-    void savePreferences() {
-        if (!preferences.begin("app-settings", false)) {
-            Serial.println("FATAL: Failed to open Preferences namespace for saving.");
-            return;
-        }
-
-        // 1. Save the magic number first
-        preferences.putUInt("magic", settings.MAGIC_NUMBER);
-        
-        // 2. Save all settings
-        preferences.putInt("maxSpeed", settings.maxMotorSpeed);
-        preferences.putFloat("tempOffset", settings.temperatureOffset);
-        preferences.putBool("autoMode", settings.enableAutoMode);
-        preferences.putString("devName", settings.deviceName);
-
-        // Commit and close
-        preferences.end();
-        Serial.println("Preferences saved successfully.");
-    }
-
-private:
-    // Make constructor private to enforce Singleton pattern
-    PreferenceManager() {} 
-    
-    // Disallow copy and assignment
-    PreferenceManager(const PreferenceManager&) = delete;
-    PreferenceManager& operator=(const PreferenceManager&) = delete;
-
-    Preferences preferences;
-};
 
 
 //#define TIMER_PIN 14
@@ -223,9 +185,6 @@ Single battery powered
 #define SDA_GPIO             5
 #define SCL_GPIO             7      
 #define AS600_POWER_PIN      4
-#define AS5600_PWR_ON_TIME   30 // ms of how long to wait after power on before reading it, It is also an interupt cycle
-#define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
-#define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
 AS5600 as5600; 
 
 #define ANALOG_PIN 123
@@ -243,6 +202,8 @@ void IRAM_ATTR onBlinkLed(void* arg);
 void IRAM_ATTR onSpinLed(void* arg);
 void IRAM_ATTR onDirLed(void* arg);
 void IRAM_ATTR onErrorLed(void* arg);
+void IRAM_ATTR onStoreWindData(void* arg);
+
 void tap(Button2& btn);
 void tap2(Button2& btn);
 
@@ -256,6 +217,7 @@ void printVersionAndCompileDate() {
   Serial_print(" at ");
   Serial_println(__TIME__);
 }
+
 
 void printAS5600Config() {
 
@@ -354,6 +316,80 @@ static void printResetInfo(const ResetInfo& i) {
 
 ErrorLogger elog;
 
+PrefBlob<AppPrefs> store(SCHEMA_VERSION);
+
+void loadPreferences() {
+  store.begin();
+
+  AppPrefs prefsLoaded;
+  int loaded = store.load(prefsLoaded);
+  Serial_print("Prefs loaded status: "); Serial_println(loaded);
+
+  if (loaded < 0) {
+    Serial_println("Error loading ... saving defulat preferences");
+
+    int save = store.save(prefs);
+    Serial_print("Save status: "); Serial_println(save);
+    if (save < 0) {
+      Serial_println("Save failed");
+    }
+  } else {
+    Serial_println("Prefs loaded ok! Using that"); 
+    prefs = prefsLoaded;
+  }
+
+
+  printPreferences();
+
+  store.end();
+}
+
+void savePreferences() {
+  store.begin();
+  Serial_println("Saving preferences");
+
+  int save = store.save(prefs);
+  Serial_print("Save status: "); Serial_println(save);
+  if (save < 0) {
+    Serial_println("Save failed");
+  }
+
+  printPreferences();
+  store.end();
+}
+
+void printPreferences() {
+  Serial_println("---- Preferences ----");
+  Serial_print("  pref_version: "); Serial_println(prefs.pref_version);
+  Serial_print("  version: ");      Serial_println(prefs.version);
+  Serial_print("  url_to_send: ");  Serial_println(prefs.url_to_send);
+  Serial_println();
+
+  Serial_print("  light_sleep_enabled: ");  Serial_println(prefs.light_sleep_enabled);
+  Serial_print("  sleep_enabled: ");  Serial_println(prefs.sleep_enabled);
+  Serial_print("  sleep_hour_start: ");  Serial_println(prefs.sleep_hour_start);
+  Serial_print("  sleep_hour_end: ");    Serial_println(prefs.sleep_hour_end);
+  Serial_println();
+
+  Serial_print("  store_wind_data_interval: "); Serial_println(prefs.store_wind_data_interval);
+  Serial_print("  send_data_interval: ");       Serial_println(prefs.send_data_interval);
+  Serial_println();
+  
+  Serial_print("  error_led_on_time: ");   Serial_println(prefs.error_led_on_time);
+  Serial_print("  dir_led_on_time: ");     Serial_println(prefs.dir_led_on_time);
+  Serial_print("  spin_led_on_time: ");    Serial_println(prefs.spin_led_on_time);
+  Serial_print("  blink_led_on_time: ");   Serial_println(prefs.blink_led_on_time);
+  Serial_print("  blink_led_interval: ");  Serial_println(prefs.blink_led_interval);
+  Serial_println();
+
+  Serial_print("  as5600_pwr_on_time: ");   Serial_println(prefs.as5600_pwr_on_time);
+  Serial_print("  as5600_read_interval: "); Serial_println(prefs.as5600_read_interval);
+  Serial_println("---------------------");
+}
+
+
+String version = "2.0";
+
 void setup() {
   //Serial.begin(115200);
   setTime(15, 0, 0, 29, 9, 2025);
@@ -363,7 +399,9 @@ void setup() {
   Serial_println();
   Serial_println("### PROGRAM START! ###");
   Serial_print("Compiled on "); Serial_println(__DATE__ " " __TIME__);
-  Serial_print("Version:"); Serial_println("0.1");
+  Serial_print("Version:"); Serial_println(prefs.version);
+
+  loadPreferences();
 
   esp_log_level_set("i2c.master", ESP_LOG_NONE); 
 
@@ -442,7 +480,7 @@ void setup() {
     .name = "blinkLed_timer"
   };
   esp_timer_create(&blinkLed_args, &blinkLed_timer);
-  esp_timer_start_periodic(blinkLed_timer, BLINK_LED_ON_TIME * 1000); 
+  esp_timer_start_periodic(blinkLed_timer, prefs.blink_led_on_time * 1000); 
 
   esp_timer_handle_t spinLed_timer;
   const esp_timer_create_args_t spinLed_args = {
@@ -452,7 +490,7 @@ void setup() {
     .name = "spinLed_timer"
   };
   esp_timer_create(&spinLed_args, &spinLed_timer);
-  esp_timer_start_periodic(spinLed_timer, SPIN_LED_ON_TIME * 1000); 
+  esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time * 1000); 
 
   esp_timer_handle_t dirLed_timer;
   const esp_timer_create_args_t dirLed_args = {
@@ -462,7 +500,7 @@ void setup() {
     .name = "dirLed_timer"
   };
   esp_timer_create(&dirLed_args, &dirLed_timer);
-  esp_timer_start_periodic(dirLed_timer, DIR_LED_ON_TIME * 1000);  
+  esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time * 1000);  
 
   esp_timer_handle_t errorLed_timer;
   const esp_timer_create_args_t errorLed_args = {
@@ -472,7 +510,7 @@ void setup() {
     .name = "errorLed_timer"
   };
   esp_timer_create(&errorLed_args, &errorLed_timer);
-  esp_timer_start_periodic(errorLed_timer, ERROR_LED_ON_TIME * 1000); 
+  esp_timer_start_periodic(errorLed_timer, prefs.error_led_on_time * 1000); 
 
   esp_timer_handle_t readSpeed_timer;
   const esp_timer_create_args_t readSpeed_args = {
@@ -492,35 +530,29 @@ void setup() {
     .name = "readDirection_timer"
   };
   esp_timer_create(&readDirection_args, &readDirection_timer);
-  esp_timer_start_periodic(readDirection_timer, AS5600_PWR_ON_TIME*1000); 
+  esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time*1000); 
 
-  Serial_println("Done init!");
+  esp_timer_handle_t storeWindData_timer;
+  const esp_timer_create_args_t storeWindData_args = {
+      .callback = &onStoreWindData,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "storeWindData_timer"
+  };
+  esp_timer_create(&storeWindData_args, &storeWindData_timer);
+  esp_timer_start_periodic(storeWindData_timer, prefs.store_wind_data_interval*1000*1000); // X seconds (in microseconds)
 
-
-   
+  Serial_println("Done init!");   
 }
 
-uint16_t get_log_timestamp(int hour, int minute, int second) {
-  return hour*60*30 + minute*30 + second/2;  // round on every 2 seconds so that we can store it inside 16 bit int. Max:43200 < 2**16
+uint32_t get_log_timestamp(int hour, int minute, int second) {
+  //return hour*60*30 + minute*30 + second/2;  // round on every 2 seconds so that we can store it inside 16 bit int. Max:43200 < 2**16
+  return hour*60*60 + minute*60 + second; // timestamp in seconds
 }
 
-uint16_t get_log_timestamp() {
+uint32_t get_log_timestamp() {
   return get_log_timestamp(hour(), minute(), second());
 }
-
-
-#define DIRECTIONS_LOG_LEN 4 
-int last_direction_read = -1;
-int directions_log[DIRECTIONS_LOG_LEN];
-volatile int directions_log_i = 0;
-
-#define SAVE_DIRS_N_HOURS 2
-#define DIRECTIONS_LOG_SAVE_TIME (60*60*SAVE_DIRS_N_HOURS) // save the last SAVE_DIRS_N_HOURS hours of direction logs
-#define DIRECTIONs_LOG_PER_SECONDS (DIRECTIONS_LOG_LEN * AS5600_READ_INTERVAL/1000) 
-#define DIRECTIONS_AVG_LEN (DIRECTIONS_LOG_SAVE_TIME / DIRECTIONs_LOG_PER_SECONDS)
-int directions_avg_i = 0;
-uint16_t directions_avg[DIRECTIONS_AVG_LEN];
-uint16_t directions_avg_time[DIRECTIONS_AVG_LEN];
 
 
 #ifdef PRINT_MAGNET_READ_DEBUG
@@ -534,7 +566,8 @@ void IRAM_ATTR onBlinkLed(void* arg) {
   static int nOnBlinkLedcalls = 0;
   nOnBlinkLedcalls ++;
 
-  if(nOnBlinkLedcalls % (BLINK_LED_INTERVAL/BLINK_LED_ON_TIME) == 0) {
+  uint16_t toggleCount = prefs.blink_led_interval*100 / prefs.blink_led_on_time;
+  if(nOnBlinkLedcalls % toggleCount == 0) {
     digitalWrite(BLINK_LED_PIN, HIGH);    
     //Serial_print("on");
   } else {
@@ -574,6 +607,18 @@ void IRAM_ATTR onErrorLed(void* arg) {
 }
 
 
+#define DIRECTIONS_LOG_LEN 10  // buffer to store diractions before the are averaged and saved in an array to be send 
+int last_direction_read = -1;
+int directions_log[DIRECTIONS_LOG_LEN];
+volatile int directions_log_i = 0;
+
+
+  #define AS5600_PWR_ON_TIME   30 
+#define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
+#define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
+
+
+
 void IRAM_ATTR onReadDirection(void* arg) {
   static int directionReadCount = 0; 
   int angle = 0;
@@ -581,102 +626,209 @@ void IRAM_ATTR onReadDirection(void* arg) {
   #define MAGNET_READ_REPEATS 4
   int8_t readRepeats;
 
-  //Serial.flush();
-  switch(directionReadCount) {
-    case 1:
-      digitalWrite(AS600_POWER_PIN, HIGH);
-      break;
-    
-    case 2: 
-      #ifdef PRINT_MAGNET_READ_DEBUG
-      Serial_print("Adress: "); Serial_println(as5600.getAddress());
-      Serial_print("Is connectet: "); Serial_println(as5600.isConnected());
-      Serial_print("Magnet magnitude: "); Serial_println(as5600.readMagnitude());
-      Serial_print("Detect magnet: "); Serial_println(as5600.detectMagnet());
-      Serial_print("magnetTooStrong: "); Serial_println(as5600.magnetTooStrong());
-      Serial_print("magnetTooWeak: "); Serial_println(as5600.magnetTooWeak());
-      #endif
-      
-      readRepeats = MAGNET_READ_REPEATS;
-      do {
-        angle = as5600.readAngle()*360 / 4096;
-        as5600_error = as5600.lastError();
-        //DBG_MNG( Serial_print("Read angle: "); Serial_print(angle); Serial_print(" "); Serial_println(as5600_error); );
-      } while(as5600_error != 0 && --readRepeats > 0);
-      
-      if(as5600_error == 0) {
-        // successful angle read
-        last_direction_read = angle;
-        DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); Serial_println(); );
+  uint16_t ir_cycles = (prefs.as5600_read_interval*100 / prefs.as5600_pwr_on_time);
 
-        #define BLINK_MARGIN  20
-        if(BLINK_MARGIN > angle || angle > 360-BLINK_MARGIN) direction_detected_north = 1; // blink north direction led
-        
-        portENTER_CRITICAL_ISR(&timerMux);
+  //Serial.flush();
+  if(directionReadCount == 1) {
+    digitalWrite(AS600_POWER_PIN, HIGH);
+  }
+
+  else if(directionReadCount == 2) {
+    //#ifdef PRINT_MAGNET_READ_DEBUG
+    //Serial_print("Adress: "); Serial_println(as5600.getAddress());
+    //Serial_print("Is connectet: "); Serial_println(as5600.isConnected());
+    //Serial_print("Magnet magnitude: "); Serial_println(as5600.readMagnitude());
+    //Serial_print("Detect magnet: "); Serial_println(as5600.detectMagnet());
+    //Serial_print("magnetTooStrong: "); Serial_println(as5600.magnetTooStrong());
+    //Serial_print("magnetTooWeak: "); Serial_println(as5600.magnetTooWeak());
+    //#endif
+    
+    readRepeats = MAGNET_READ_REPEATS;
+    do {
+      angle = as5600.readAngle()*360 / 4096;
+      as5600_error = as5600.lastError();
+
+      //if(as5600_error != 0) elog.log(ErrorLogger::ERR_DIR_READ_ONCE);
+      //DBG_MNG( Serial_print("Read angle: "); Serial_print(angle); Serial_print(" "); Serial_println(as5600_error); );
+    } while(as5600_error != 0 && --readRepeats > 0);
+
+    
+    if(as5600_error == 0) {
+      // successful angle read
+      last_direction_read = angle;
+      DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
+
+      // what should be considered "facing north", how much can the angle diviate from north
+      #define BLINK_MARGIN  20
+      if(BLINK_MARGIN > angle || angle > 360-BLINK_MARGIN) direction_detected_north = 1; // blink north direction led
+      
+      portENTER_CRITICAL_ISR(&timerMux);
+      if(directions_log_i < DIRECTIONS_LOG_LEN) {
         // save the measurement inside the log
         directions_log[directions_log_i++] = angle;
-        if (directions_log_i-1 == DIRECTIONS_LOG_LEN && directions_avg_i < DIRECTIONS_AVG_LEN) {
-          // the log is full so we calculate average and save the measurement into the avg log
-          directions_log_i = 0;
-          directions_avg[directions_avg_i] = average_direction(directions_log, DIRECTIONS_LOG_LEN);
-          directions_avg_time[directions_avg_i] = get_log_timestamp();ćžđđć
-          directions_avg_i += 1;
-        }
-        portEXIT_CRITICAL_ISR(&timerMux);
-
       } else {
-        last_direction_read = as5600_error; // no angle was succesfully read due to an error
-        Serial_print("Read angle error: "); {
-          Serial_println(as5600_error);
-          error_notify_led = 1;
-        }
-        elog.log(ErrorLogger::ERR_DIR_READ);
+        elog.log(ErrorLogger::ERR_DIR_SHORT_BUF_FULL);
       }
-      
-      digitalWrite(AS600_POWER_PIN, LOW);
-      break;
+      portEXIT_CRITICAL_ISR(&timerMux);
 
-    case AS5600_IR_CYCLES: 
-      directionReadCount = 0;
-      break;
-
+    } else {
+      last_direction_read = as5600_error; // no angle was succesfully read due to an error
+      Serial_print("Read angle error: "); {
+        Serial_println(as5600_error);
+        error_notify_led = 1;
+      }
+      elog.log(ErrorLogger::ERR_DIR_READ);
+    }
+    
+    digitalWrite(AS600_POWER_PIN, LOW);
   }
+
+  // reset the directionReadCount when we hit the ir_cycles 
+  else if(directionReadCount == ir_cycles) {
+    directionReadCount = 0;
+  }
+
   directionReadCount++;
 }
 
-int directions_avg_i_on_send = 0;  // optional: track index at send time
-String getDirections() {
-  uint16_t dirs_copy[DIRECTIONS_AVG_LEN];
-  uint16_t times_copy[DIRECTIONS_AVG_LEN];
-  uint16_t len = 0;
 
-  portENTER_CRITICAL(&timerMux);
-  len = directions_avg_i;
-  directions_avg_i_on_send = directions_avg_i; // keep if you need it like speeds
-  memcpy(dirs_copy, directions_avg,      len * sizeof(directions_avg[0]));
-  memcpy(times_copy, directions_avg_time, len * sizeof(directions_avg_time[0]));
-  portEXIT_CRITICAL(&timerMux);
+//#define PRINT_SPEED
+//#define PRINT_ON_STORE_WIND
 
-  if (len == 0) return "dirs=;dirTimes=;";
+volatile float rps = 0;
+volatile uint32_t rotationCount = 0;
+volatile int lastHalSensorRead = -1;
+volatile uint32_t lastDetection = 0; // we need to store the time of last detection to calculate rotations per second
+void IRAM_ATTR onReadHal(void* arg) {
+  // Example logic: latch HAL sensor if triggered
+  int halSensorRead = digitalRead(HAL_SENSOR_PIN);
+  if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
+    uint32_t now = micros() / 1000;
 
-  String out = "dirs=";
-  out += String(dirs_copy[0]);
-  for (int i = 1; i < len; i++) {
-    out += ",";
-    out += String(dirs_copy[i]);
+    portENTER_CRITICAL_ISR(&timerMux);
+    rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
+    rotation_detected_blink = 1;
+
+    #ifdef PRINT_SPEED 
+      Serial_print("|");
+    #endif
+    rps += 1000.0f / (now - lastDetection);
+    portEXIT_CRITICAL_ISR(&timerMux);
+    lastDetection = now; 
   }
-
-  out += ";dirTimes=";
-  out += String(times_copy[0]);
-  for (int i = 1; i < len; i++) {
-    out += ",";
-    out += String(times_copy[i]-times_copy[i-1]);
-  }
-
-  out += ";";
-  return out;
+  lastHalSensorRead = halSensorRead;
 }
 
+
+#define SPEEDS_LOG_LEN 60 
+uint16_t speeds_log[SPEEDS_LOG_LEN]; // speed logged each second for a short interval
+volatile int speeds_log_i = 0;
+
+// read speed every second
+void IRAM_ATTR onReadSpeed(void* arg) {
+  portENTER_CRITICAL_ISR(&timerMux);
+
+  float speed =  rotationCount == 0? 0 : rps / rotationCount;
+  #ifdef PRINT_SPEED 
+    Serial_print("Speed: "); Serial_print(speed * 10); 
+    Serial_print(", cnt:"); Serial_println(rotationCount);
+  #endif
+  rotationCount = 0; 
+  rps = 0;
+
+  if (speeds_log_i < SPEEDS_LOG_LEN){
+    speeds_log[speeds_log_i++] = int(speed * 10);
+  } else {
+    elog.log(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
+  }
+
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+
+
+//#define STORE_WIND_N_HOURS 2
+// calculate how much store lenght do we need to save N hours of data  if we store every interval second
+//#define WIND_LOG_STORE_LEN ((STORE_WIND_N_HOURS* 60*60) / STORE_WIND_DATA_INTERVAL) 
+#define WIND_LOG_STORE_LEN 1000 // no reason to store more then 1000 data as it cant properly send all of it 
+
+// ---- Data record ------------------------------------------------------------
+uint32_t wind_data_start_time = 0;
+
+// ---- Storage (ring buffer) --------------------------------------------------
+static WindSample wind_log[WIND_LOG_STORE_LEN];
+
+// Head points to next write position; count is number of valid items (<= LEN)
+static volatile uint16_t w_head = 0;
+static volatile uint16_t w_count = 0;
+static volatile uint32_t first_timestamp = 0;
+static volatile uint32_t last_timestamp = 0;
+
+// ---- Helpers ----------------------------------------------------------------
+uint16_t windlog_len(void) {
+    return (uint16_t) w_count;
+}
+
+// Oldest item index in the circular buffer (physical index within wind_log[])
+uint16_t windlog_oldest_index(void) {
+    if (w_count == 0) return 0;
+    // (head - count) modulo LEN
+    uint16_t oldest = (uint16_t)((w_head + WIND_LOG_STORE_LEN - w_count) % WIND_LOG_STORE_LEN);
+    return oldest;
+}
+
+// ---- Public API ------------------------------------------------------------
+
+// Store one record (overwrites the oldest when full)
+void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
+    wind_log[w_head].avg  = avg;
+    //wind_log[w_head].max  = max;
+    wind_log[w_head].dir  = dir;
+    //wind_log[w_head].ts = ts;
+
+    if(w_count == 0) first_timestamp = ts;
+    last_timestamp = ts;
+    
+    w_head = (uint16_t)((w_head + 1) % WIND_LOG_STORE_LEN);
+    if (w_count < WIND_LOG_STORE_LEN) {
+        w_count++;
+    } else{
+      first_timestamp += prefs.store_wind_data_interval; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
+      // buffer full -> oldest is implicitly dropped
+      elog.log(ErrorLogger::ERR_WIND_BUF_OVERWRITE);
+    }
+}
+
+int windlog_copy(WindSample* out, uint16_t max_out) {
+  if (!out || max_out == 0) return 0;
+
+  uint16_t copied = 0;
+  uint16_t size   = w_count;
+  uint16_t to_copy = (size < max_out) ? size : max_out;
+
+  if (to_copy > 0) {
+      uint16_t base = windlog_oldest_index();
+
+      // The logical span may wrap; split into two memcpy if needed
+      uint16_t first_run = (uint16_t)((base + to_copy <= WIND_LOG_STORE_LEN) ? to_copy
+                                                                              : (WIND_LOG_STORE_LEN - base));
+      memcpy(out, &wind_log[base], first_run * sizeof(WindSample));
+
+      uint16_t remaining = (uint16_t)(to_copy - first_run);
+      if (remaining) {
+          memcpy(out + first_run, &wind_log[0], remaining * sizeof(WindSample));
+      }
+      copied = to_copy;
+  }
+
+  return copied;
+}
+
+// Optional: clear buffer
+inline void windlog_clear(void) {
+    w_head = 0;
+    w_count = 0;
+}
 
 float average_direction(const int* directions_log, size_t len) {
   float sum_sin = 0.0;
@@ -695,99 +847,89 @@ float average_direction(const int* directions_log, size_t len) {
 
 
 
-float rps = 0;
-int rotationCount = 0;
+void IRAM_ATTR onStoreWindData(void* arg) {
+  portENTER_CRITICAL(&timerMux);
+  // store the miliseconds of when the first data got stored 
+  if(wind_data_start_time == 0) wind_data_start_time = lastNow;
 
-#define SPEEDS_LOG_LEN 10 
-uint16_t speeds_log[SPEEDS_LOG_LEN]; // speed logged each second for a short interval
-volatile int speeds_log_i = 0;
-
-// ################# TODO ACtually calculate how many to save for SAVE_N_HOURS hours buffer
-#define SAVE_N_HOURS 2
-#define SPEEDS_AVG_LEN (60 / SPEEDS_LOG_LEN * 60 * SAVE_N_HOURS) // averaged speed from the speeds_log array, each time the speeds_log array fills up this array saves the value
-uint32_t speeds_avg_time_start = 0; // when whas the first measurement loged into the speeds_avg array
-int speed_avg_i = 0;
-uint16_t speeds_avg[SPEEDS_AVG_LEN];
-uint16_t speeds_max[SPEEDS_AVG_LEN];
-uint16_t speeds_time[SPEEDS_AVG_LEN];
-
-
-volatile int timerState = 0;
-volatile int photo_start_value = 0;
-volatile uint32_t lastDetection = 0;
-
-
-volatile int lastHalSensorRead = -1;
-void IRAM_ATTR onReadHal(void* arg) {
-  //digitalWrite(TIMER_PIN, HIGH);
-
-  // Example logic: latch HAL sensor if triggered
-  int halSensorRead = digitalRead(HAL_SENSOR_PIN);
-  if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
-    uint32_t now = micros() / 1000;
-
-    portENTER_CRITICAL_ISR(&timerMux);
-    rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
-    rotation_detected_blink = 1;
-
-    //Serial_print("|");
-    rps += 1000.0f / (now - lastDetection);
-    portEXIT_CRITICAL_ISR(&timerMux);
-    lastDetection = now; 
+  // the log is full so we calculate average and save the measurement into the avg log
+  //uint16_t maxSpeed = 0;
+  int avgSpeedSum = 0;
+  for(int i=0; i<speeds_log_i; i++) {
+    //maxSpeed = max(maxSpeed, speeds_log[i]);
+    avgSpeedSum += speeds_log[i]; 
   }
-  lastHalSensorRead = halSensorRead;
-  //digitalWrite(TIMER_PIN, LOW); 
+
+  int avgSpeed = avgSpeedSum / speeds_log_i;
+  speeds_log_i = 0;
+
+
+  int16_t avgDir = average_direction(directions_log, directions_log_i);
+  directions_log_i = 0;
+  
+  uint32_t timestamp = get_log_timestamp();;
+
+  //windlog_push(avgSpeed, maxSpeed, avgDir, timestamp);
+  windlog_push(avgSpeed, avgDir, timestamp);
+  portEXIT_CRITICAL_ISR(&timerMux);
+
+  #ifdef PRINT_ON_STORE_WIND 
+    Serial_print("Updated wind data, avg:"); Serial_print(avgSpeed);
+    Serial_print(", max:"); Serial_print(maxSpeed);
+    Serial_print(", dir:"); Serial_print(avgDir);
+    Serial_println();
+  #endif
 }
 
-// read speed every second
-void IRAM_ATTR onReadSpeed(void* arg) {
+WindSample wind_log_copy[WIND_LOG_STORE_LEN];
+String getWindData() {
   portENTER_CRITICAL_ISR(&timerMux);
-  float speed =  rotationCount == 0? 0 : rps / rotationCount;
-  rotationCount = 0; 
-  rps = 0;
+  uint16_t wind_log_copy_len = windlog_copy(wind_log_copy, WIND_LOG_STORE_LEN);
+  portEXIT_CRITICAL_ISR(&timerMux);
 
-  speeds_log[speeds_log_i] = int(speed * 10);
-  if (speeds_log_i < SPEEDS_LOG_LEN){
-    speeds_log_i ++;
-    portEXIT_CRITICAL_ISR(&timerMux);
+  //int speed_avg_i_on_send = 0;
+  //speed_avg_i_on_send = speed_avg_i; // we save the index on when we send the data so we can see if there is any new data when we restart the index after successful send 
 
-    //Serial_print("Speed: "); Serial_println(speed);
-  } else {
-    // the log is full so we calculate average and save the measurement into the avg log
-    uint16_t maxSpeed = 0;
-    int avgSpeedSum = 0;
-    for(int i=0; i<SPEEDS_LOG_LEN; i++) {
-      maxSpeed = max(maxSpeed, speeds_log[i]);
-      avgSpeedSum += speeds_log[i]; 
-    }
-    int avgSpeed = avgSpeedSum / SPEEDS_LOG_LEN;
-    if(speeds_avg_time_start == 0) speeds_avg_time_start = lastNow;
-    if(speed_avg_i < SPEEDS_AVG_LEN) {
-      // only log if there is any space left in the log array
-      speeds_avg[speed_avg_i] = avgSpeed;
-      speeds_max[speed_avg_i] = maxSpeed;
-      speeds_time[speed_avg_i] = get_log_timestamp();
-      speed_avg_i ++;
-    }
-    speeds_log_i = 0;
-    portEXIT_CRITICAL_ISR(&timerMux);
-
-    //Serial_print("Updated avg:"); Serial_print(avgSpeed);
-    //Serial_print(", max:"); Serial_print(maxSpeed);
-    //Serial_print(", i:"); Serial_print(speed_avg_i);
-    //Serial_println();
+  if(wind_log_copy_len == 0) {
+    return "len=0;avg=;dir=;logFirst=;logLast=;"; 
   }
+
+  String windData = "len=" + String(wind_log_copy_len);
+
+  windData += ";avg=" + String(wind_log_copy[0].avg);
+  for(int i=1; i<wind_log_copy_len; i++) {
+    windData += ",";
+    windData += String(wind_log_copy[i].avg);
+  }
+
+  /*
+  windData += ";max=" + String(wind_log_copy[0].max);
+  for(int i=1; i<wind_log_copy_len; i++) {
+    windData += ",";
+    windData += String(wind_log_copy[i].max);
+  }
+  */
+
+  windData += ";dir=" + String(wind_log_copy[0].dir);
+  for(int i=1; i<wind_log_copy_len; i++) {
+    windData += ",";
+    windData += String(wind_log_copy[i].dir);
+  }
+
+  windData += ";logFirst=" + String(first_timestamp);
+  windData += ";logLast=" + String(last_timestamp);
+  return windData + ";"; 
 }
 
 
 bool isDeepSleepTime() {
-  //return false; 
+  if(!prefs.sleep_enabled) return false; // dont do anything if it is disabled 
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
 
   // we sleep at night ofcorse! from 8 PM to 6 AM
-  if(20 <= hour() && hour() <= 24) return true;
-  if(0 <= hour() && hour() < 6) return true;
+  if(prefs.sleep_hour_start <= hour() && hour() <= 24) return true;
+  if(0 <= hour() && hour() < prefs.sleep_hour_end) return true;
 
   return false;
 }
@@ -805,12 +947,12 @@ void evaluateIfDeepSleep() {
   }
 }
 
+uint32_t lastSend = 0;
 void loop() {
   button.loop();
   button2.loop();
   evaluateIfDeepSleep();
 
-  static uint32_t lastSend = 0;
   static uint32_t lastPrint = 0;
   static uint32_t lastVBattIdeLog = 0;
   
@@ -820,9 +962,9 @@ void loop() {
     printDiagnosticInfo();
   }*/
 
-  if(millis() - lastSend > 10*60*1000) {
+  if(millis() - lastSend > prefs.send_data_interval*60*1000) {
     lastSend = millis();
-    Serial_print("10 min passed doing send");
+    Serial_print(String(prefs.send_data_interval) + " min passed doing send");
     fullCycleSend();
   }
 
@@ -834,9 +976,12 @@ void loop() {
   lastNow = millis();
 
   //updateSerial();
-  delay(1);
-  
-  //esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 1 seconds sleep 
+
+  if(prefs.light_sleep_enabled) {
+    esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
+  } else {
+    delay(1);
+  }
 }
 
 double read_batt_v() {
@@ -955,7 +1100,7 @@ void fullCycleSend() {
       sendOk = true;
     } else {
       logSendErrorForResult(r);
-      ERR_SEND_REPEAT,
+      elog.log(ErrorLogger::ERR_SEND_REPEAT);
       Serial_print("Send failed: ");
       Serial_println(sendResultToStr(r)); // human-readable reason
       error_notify_led = 1;
@@ -971,27 +1116,18 @@ void fullCycleSend() {
 }
 
 void printDiagnosticInfo() {
+  Serial_print("\n");
+  Serial_print("WIND_LOG_STORE_LEN: "); Serial_println(WIND_LOG_STORE_LEN);
+  Serial_print("w_count: "); Serial_println(w_count);
   Serial_print("Time: "); Serial_println(getFormattedTimeString());
+  Serial_print("Last send: "); Serial_print((millis() - lastSend)/(1000*60)); Serial_println(" min ago"); 
   Serial_print("v batt ide:"); Serial_println(String(getAvgVBattIde(), 3));
   Serial_print("v batt:"); Serial_println(String(read_batt_v(), 3));
   Serial_print("v solar:"); Serial_println(String(read_solar_v(), 3));
   //Serial_print("ide array:"); printVBattIde(); Serial_println();
 
-  Serial_println("wind speeds: " + getWindSpeeds());
-  Serial_println("directions: " + getDirections());
-  Serial_println("last_dir_read: " + String(last_direction_read));
-
-  Serial_print("Winds log:");
-  for(int i=0; i < SPEEDS_LOG_LEN; i++) {
-    Serial_print(speeds_log[i]); Serial_print(";");
-  }
-  Serial_println();
-
-  Serial_print("Directions log:");
-  for(int i=0; i < DIRECTIONS_LOG_LEN; i++) {
-    Serial_print(directions_log[i]); Serial_print(";");
-  }
-  Serial_println();
+  // Serial_println("wind data: " + getWindData());
+  // TODO implement idk Serial_println("last_dir_read: " + String(last_direction_read));
 
   // read AS5600 angle:
   digitalWrite(AS600_POWER_PIN, HIGH); delay(20); // turn it on and wait 
@@ -1009,13 +1145,13 @@ void printDiagnosticInfo() {
   Serial_print("): ");
   Serial_println(postBody);
 
-  elog.log(ErrorLogger::ERR_CPU_LOCKUP_RESET);
   Serial_println("All errors:"); Serial_println(elog.getAll());
 
   Serial_println();
 }
 
 void tap(Button2& btn) {
+  printPreferences();
   printDiagnosticInfo();
 }
 
@@ -1071,7 +1207,6 @@ bool updateSerial() {
 
   return true;
 }
-
 
 
 #ifdef PRINT_SIM_COMM
@@ -1190,13 +1325,13 @@ String imsiNum;
 
 bool parseCIMIResponse(const String& response) {
   int idx;
-  response.indexOf("AT+CIMI"); if (idx == -1) return false;
-  response.indexOf("OK"); if (idx == -1) return false;
+  idx = response.indexOf("AT+CIMI"); if (idx == -1) return false;
+  idx = response.indexOf("OK"); if (idx == -1) return false;
 
   String digits = "";
   for (int i = 0; i < response.length(); i++) {
     if (isDigit(response[i])) digits += response[i];
-  }
+  }  
 
   if (digits.length() < 10) return false;  // sanity check
   
@@ -1218,22 +1353,39 @@ void readPhoneNum() {
   phoneNum = response.substring(firstQuote + 2, secondQuote);
 }
 
+void windlog_shift_timestamps(int32_t delta)
+{
+    if (delta == 0 || w_count == 0) return;
+
+    portENTER_CRITICAL(&timerMux);
+
+    first_timestamp += delta;
+    last_timestamp += delta;
+
+    /*
+    // compute index of oldest record
+    uint16_t base = (w_head + WIND_LOG_STORE_LEN - w_count) % WIND_LOG_STORE_LEN;
+
+    // iterate through all valid entries in logical order
+    for (uint16_t i = 0; i < w_count; i++) {
+        uint16_t idx = (base + i) % WIND_LOG_STORE_LEN;
+        wind_log[idx].ts +=  delta;
+    }
+    */
+
+    portEXIT_CRITICAL(&timerMux);
+}
 
 void shiftTimestampsOnNewTime(int newHour, int newMinute, int newSecond) {
-  int oldTimestamp = get_log_timestamp();                              // Old timestamp (before correction)
-  int newTimestamp = get_log_timestamp(newHour, newMinute, newSecond); // New correct time
+  uint32_t oldTimestamp = get_log_timestamp();                              // Old timestamp (before correction)
+  uint32_t newTimestamp = get_log_timestamp(newHour, newMinute, newSecond); // New correct time
 
-  int delta = newTimestamp - oldTimestamp;                      // How much the clock moved
+  int32_t delta = newTimestamp - oldTimestamp;                      // How much the clock moved
   Serial_print("Shifting timestamps by: "); Serial_println(delta);
-
-  for (int i = 0; i < directions_avg_i; i++) {
-    directions_avg_time[i] += delta;                            
-  }
-
-  for (int i = 0; i < speed_avg_i; i++) {
-    speeds_time[i] += delta;
-  }
+  windlog_shift_timestamps(delta);
 }
+
+
 bool parseCCLKResponse(const String& response) {
   // expected response example: +CCLK: "25/08/01,00:19:52+08"
   int idx = response.indexOf("CCLK:");
@@ -1267,6 +1419,118 @@ bool parseCCLKResponse(const String& response) {
   return true;
 }
 
+/*
+Parse the response data:
+The expected payload is: 
+saved: <num written>\n
+params:\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+*/
+void saveNewPrefValue(String key, String value) {
+  Serial_print("Saving the new pref: '");
+  Serial_print(key); Serial_print("':'"); Serial_print(value); Serial_println("'");
+
+  if(key == "pref_version") {
+    prefs.pref_version = value.toInt();
+  } 
+  else if(key == "version") {
+    value.toCharArray(prefs.version, sizeof(prefs.version));
+  } 
+  else if(key == "url_to_send") {
+    value.toCharArray(prefs.url_to_send, sizeof(prefs.url_to_send));
+  }
+  else if(key == "store_wind_data_interval") {
+    prefs.store_wind_data_interval = value.toInt();
+  }
+  else if(key == "error_led_on_time") {
+    prefs.error_led_on_time = value.toInt();
+  }
+  else if(key == "dir_led_on_time") {
+    prefs.dir_led_on_time = value.toInt();
+  }
+  else if(key == "spin_led_on_time") {
+    prefs.spin_led_on_time = value.toInt();
+  }
+  else if(key == "as5600_pwr_on_time") {
+    prefs.as5600_pwr_on_time = value.toInt();
+  }
+  else if(key == "as5600_read_interval") {
+    prefs.as5600_read_interval = value.toInt();
+  }
+  else if(key == "light_sleep_enabled") {
+    prefs.light_sleep_enabled = value.toInt();
+  } 
+  else if(key == "sleep_enabled") {
+    prefs.sleep_enabled = value.toInt();
+  } 
+  else if(key == "sleep_hour_start") {
+    prefs.sleep_hour_start = value.toInt();
+  } 
+  else if(key == "sleep_hour_end") {
+    prefs.sleep_hour_end = value.toInt();
+  }
+  else if(key == "blink_led_on_time") {
+    prefs.blink_led_on_time = value.toInt();
+  } 
+  else if(key == "blink_led_interval") {
+    prefs.blink_led_interval = value.toInt();
+  }
+  else if(key == "send_data_interval") {
+    prefs.send_data_interval = value.toInt();
+  }
+  else {
+    Serial_print("Unable to find the prefs key: '"); Serial_print(key); Serial_println("'");
+  }
+}
+
+
+void parseReturnData(String data) {
+  int prefsPos = data.indexOf("prefs:");
+  if (prefsPos < 0) {
+    Serial_println("No 'params' section found.");
+    return;
+  }
+
+  // Start after "prefs"
+  int pos = data.indexOf('\n', prefsPos);
+  if (pos < 0) {
+    Serial_println("No newline after 'params'.");
+    return;
+  }
+  pos++; // move past newline
+
+  while (pos < data.length()) {
+    // Find the next colon — separates key from value
+    int colonPos = data.indexOf(':', pos);
+    if (colonPos < 0) break;
+
+    // Find the next newline — end of this line
+    int lineEnd = data.indexOf('\n', colonPos);
+    if (lineEnd < 0) lineEnd = data.length();
+
+    // Extract key and value
+    String key = data.substring(pos, colonPos);
+    String value = data.substring(colonPos + 1, lineEnd);
+
+    // Trim simple whitespace and trailing commas
+    key.trim();
+    value.trim();
+
+    saveNewPrefValue(key, value);
+    // Advance to next line
+    pos = lineEnd + 1;
+  }
+
+  savePreferences();
+  Serial_println("Done params section.\n");
+  Serial_println("Reseting the module to apply the settings soon.\n\n");
+  delay(2000); // wait so that everything can print before reseting 
+  esp_restart();
+}
+
 bool parseHTTPREADResponse(const String& response) {
   int startIdx = response.indexOf("+HTTPREAD:");
   if (startIdx == -1) {
@@ -1289,8 +1553,13 @@ bool parseHTTPREADResponse(const String& response) {
     data.trim();
   }
 
-  Serial_print("HTTP payload: ");
-  Serial_println(data);
+  Serial_print("Parsing return data: \r\n'");
+  data.replace("\n", "\r\n");
+  Serial_print(data);
+  data.replace("\r\n", "\n");
+  Serial_println("'");
+
+  parseReturnData(data);
   return true;
 }
 
@@ -1338,50 +1607,11 @@ String zeros(int length) {
   return result;
 }
 
-int speed_avg_i_on_send = 0;
-String getWindSpeeds() {
-  uint16_t speeds_avg_copy[SPEEDS_AVG_LEN];
-  uint16_t speeds_max_copy[SPEEDS_AVG_LEN];
-  uint16_t speeds_time_copy[SPEEDS_AVG_LEN];
-  uint16_t speeds_copy_len = 0;
-
-  portENTER_CRITICAL(&timerMux);
-  speeds_copy_len = speed_avg_i;
-  speed_avg_i_on_send = speed_avg_i; // we save the index on when we send the data so we can see if there is any new data when we restart the index after successful send 
-  memcpy(speeds_avg_copy, speeds_avg, speeds_copy_len * sizeof(speeds_avg[0]));
-  memcpy(speeds_max_copy, speeds_max, speeds_copy_len * sizeof(speeds_max[0]));
-  memcpy(speeds_time_copy, speeds_time, speeds_copy_len * sizeof(speeds_time[0]));
-  portEXIT_CRITICAL(&timerMux);
-
-  // TODO add when the data was added ike the time when the first data was recorder
-
-  if(speeds_copy_len == 0) {
-    return "avg=;max=;windTimes=;";
-  }
-
-  String windSpeeds = "avg=" + String(speeds_avg_copy[0]);
-  for(int i=1; i<speeds_copy_len; i++) {
-    windSpeeds += ",";
-    windSpeeds += String(speeds_avg_copy[i]);
-  }
-
-  windSpeeds += ";max=" + String(speeds_max_copy[0]);
-  for(int i=1; i<speeds_copy_len; i++) {
-    windSpeeds += ",";
-    windSpeeds += String(speeds_max_copy[i]);
-  }
-
-
-  windSpeeds += ";windTimes=" + String(speeds_time_copy[0]);
-  for (int i = 1; i < speeds_copy_len; i++) {
-    windSpeeds += "," + String(speeds_time_copy[i]-speeds_time_copy[i-1]);
-  }
-    
-  return windSpeeds + ";"; 
-}
 
 String getPostBody() {
   String body = "";
+  body += "pref=" + String(prefs.pref_version) + ";";
+  body += "ver=" + String(prefs.version) + ";";
   body += "imsi=" + imsiNum + ";";
   body += "phoneNum=" + phoneNum + ";";
   body += "vbatIde=" + String(getAvgVBattIde(), 3) + ";";
@@ -1392,8 +1622,7 @@ String getPostBody() {
   body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
   body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
   body += "errors=" + elog.getAllForSend() + ";";
-  body += getDirections();
-  body += getWindSpeeds(); 
+  body += getWindData();
 
   return body;
 }
@@ -1424,7 +1653,7 @@ String waitForHttpActionResponse(unsigned long timeoutMs) {
 bool sendPOST() {
   if (sendCommand("AT+HTTPINIT", 1000) == "") return false;
   if (sendCommand("AT+HTTPPARA=\"CID\",1", 500) == "") return false;
-  if (sendCommand("AT+HTTPPARA=\"URL\",\"http://46.224.24.144:4123/efiG1YOenDEmsN6/save/" + imsiNum + "\"", 500) == "") return false;
+  if (sendCommand(String("AT+HTTPPARA=\"URL\",\"") + prefs.url_to_send + imsiNum + "\"", 500) == "") return false;
 
   String postData = getPostBody();
   if (sendCommand("AT+HTTPDATA=" + String(postData.length()) + ",10000", 500, "DOWNLOAD") == "") return false;
@@ -1515,7 +1744,9 @@ SendResult runHttpGetHot() {
   if (sendCommand("AT+SAPBR=2,1", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
 
   if (!sendPOST()) return SendResult::HTTP_FAIL;
+  
   waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+  
 
   // Step 5: Cleanup
   sendCommand("AT+HTTPTERM");
@@ -1524,7 +1755,8 @@ SendResult runHttpGetHot() {
   Serial_print("Success!");
 
   elog.clearAll(); // clear all the errors so they are not send again
-
+  windlog_clear();
+  /*
   portENTER_CRITICAL(&timerMux);
   Serial_print("We need to move: ");
   Serial_print(speed_avg_i - speed_avg_i_on_send);
@@ -1538,11 +1770,50 @@ SendResult runHttpGetHot() {
   }
   speed_avg_i = dst;
   speed_avg_i_on_send = 0;
-
   speeds_avg_time_start = millis();
   directions_avg_i = 0;
   portEXIT_CRITICAL(&timerMux);
+    */
 
   return SendResult::OK;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

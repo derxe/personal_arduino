@@ -10,7 +10,9 @@
 #include "ErrorLogger.h"
 #include "ResetDiagnostics.h"
 #include "MyPrefs.h"
+#include "FloatRunningAverage.h"
 #include <string.h>  // for memcpy
+#include "AHT20_SoftI2C.h"
 
 typedef struct {
     uint16_t avg;
@@ -19,10 +21,13 @@ typedef struct {
     //uint16_t ts;   // we only log last and first log instead of logging every timestamp
 } WindSample;
 
-struct AppPrefs {
+struct AppPrefs { 
   uint16_t pref_version;              // just an intiger to difirentiata between different versions 
+  uint32_t pref_set_date;             // the date time when the preferences were set
   char     version[8];                // program/sw version
-  char     url_to_send[70];           // url that is used to send the data to 
+  char     url_data[128];             // url that is used to send the data to 
+  char     url_prefs[128];            // url that is used to send the preferences to if requeste
+  char     url_errors[128];      // url that is used to send all the error names 
 
   uint8_t  light_sleep_enabled;       // light sleep between reads, 0 if disabled, and 1 if enabled
   uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled
@@ -31,32 +36,49 @@ struct AppPrefs {
 
   uint8_t  store_wind_data_interval;  // how ofthen the values (speed and dir) are saved 
   uint8_t  send_data_interval;        // in minutes, how often do we send the data 
+  uint8_t  n_send_retries;            // how many times do we retry sending 
 
-  uint8_t  error_led_on_time;    // in ms, how log the error led stays on when blinking 
-  uint8_t  dir_led_on_time;      // in ms, how log the direc led stays on when blinking 
-  uint8_t  spin_led_on_time;     // in ms, how log the spin  led stays on when blinking 
-  uint8_t  blink_led_on_time;    // in ms, how log the blink led stays on when blinking 
+  uint8_t  at_timeout_s;              // timeouts for crutical AT commands
+  uint8_t  sim_timeout_s;
+  uint8_t  csq_timeout_s;             
+  uint8_t  creg_timeout_s;  
+  uint8_t  cgreg_timeout_s;  
+
+  uint8_t  error_led_on_time;    // <=0 to disable it, in ms, how log the error led stays on when blinking 
+  uint8_t  dir_led_on_time;      // <=0 to disable it, in ms, how log the direc led stays on when blinking 
+  uint8_t  spin_led_on_time;     // <=0 to disable it, in ms, how log the spin  led stays on when blinking 
+  uint8_t  blink_led_on_time;    // <=0 to disable it, in ms, how log the blink led stays on when blinking 
   uint8_t  blink_led_interval;   // deca seconds 10 for 1 seconds, hof often the blink led blinks
 
   uint8_t  as5600_pwr_on_time;   // ms of how long to wait after power on before reading it, It is also an interupt cycle
   uint8_t  as5600_read_interval; // deca seconds 10 for 1 seconds, // how ofter we want to read direction
 };
 
-#define SCHEMA_VERSION  11
+#define SCHEMA_VERSION  18
 
 // define default preferences:
 AppPrefs prefs = {
-  /*pref_version*/              2,
-  /*version*/                   "v2",
-  /*url_to_send*/               "http://46.224.24.144/veter/save/",
+  /*pref_version*/              4,
+  /*pref_set_date*/             0, 
+  /*version*/                   "v4",
+  /*url_data*/                  "http://46.224.24.144/veter/save/",
+  /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
+  /*url_errors*/                "http://46.224.24.144/veter/save_errors/",
 
-  /*light_sleep_enabled*/       0,
+  /*light_sleep_enabled*/       1,
   /*sleep_enabled*/             0,
   /*sleep_hour_start*/          20,
   /*sleep_hour_end*/            6,
 
   /*store_wind_data_interval*/  5,
   /*send_data_interval*/        10,
+  /*n_send_retries*/            5,
+
+  /*at_timeout_s*/              10,
+  /*sim_timeout_s*/             20,
+  /*csq_timeout_s*/             120,
+  /*creg_timeout_s*/            120,
+  /*cgreg_timeout_s*/           120,
 
   /*error_led_on_time*/         10,
   /*dir_led_on_time*/           10,
@@ -76,14 +98,14 @@ enum class SendResult : int {
   REG_FAIL             = -4,   // CREG? or CGREG? failed (both map here)
   CIMI_FAIL            = -5,   // CIMI failed
   GPRS_SETUP_FAIL      = -6,   // any SAPBR step failed
-  HTTP_FAIL            = -7,   // sendPOST / HTTPREAD failed
+  HTTP_FAIL            = -7,   // sendPOSTData / HTTPREAD failed
 };
 
 //#define PRINT_SIM_COMM 
 //#define PRINT_MAGNET_READ_DEBUG
 
-#define UART_DEBUG_TX  21
-#define UART_DEBUG_RX  17
+#define UART_DEBUG_TX  16
+#define UART_DEBUG_RX  14 // unused pin 14
 
 SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
 #define SerialDBG SerialUart0
@@ -122,6 +144,8 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX);
 //#define VANE_POWER_PIN   1
 #define HAL_SENSOR_PIN     12
 
+
+
 //#define STORE_WIND_DATA_INTERVAL 5 // save data each X seconds 
 
 
@@ -130,19 +154,6 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX);
 
 /*
 TODO imporvments:
-
-Error codes logging and sending
-#DONE Change Sending IP 
-Remove sending of max speed just send speed 
-
-
-
-
-
-configurability
-Presistant sessions
-
-
 
 */
 
@@ -186,6 +197,18 @@ Single battery powered
 #define SCL_GPIO             7      
 #define AS600_POWER_PIN      4
 AS5600 as5600; 
+
+// this temerature sensor is inside
+#define AHT20_1_PWR_PIN   17
+#define AHT20_1_SDA_PIN   34
+#define AHT20_1_SCL_PIN   21
+AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN);
+
+#define AHT20_2_PWR_PIN   40
+#define AHT20_2_SDA_PIN   36
+#define AHT20_2_SCL_PIN   38
+AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN);
+
 
 #define ANALOG_PIN 123
 
@@ -361,34 +384,45 @@ void savePreferences() {
 void printPreferences() {
   Serial_println("---- Preferences ----");
   Serial_print("  pref_version: "); Serial_println(prefs.pref_version);
-  Serial_print("  version: ");      Serial_println(prefs.version);
-  Serial_print("  url_to_send: ");  Serial_println(prefs.url_to_send);
+  Serial_print("  pref_set_date: "); Serial_println(getFormattedUnixTime(prefs.pref_set_date));
+  Serial_print("  version:    ");      Serial_println(prefs.version);
+  Serial_print("  url_data:   ");  Serial_println(prefs.url_data);
+  Serial_print("  url_prefs:  ");  Serial_println(prefs.url_prefs);
+  Serial_print("  url_errors: ");  Serial_println(prefs.url_errors);
   Serial_println();
 
   Serial_print("  light_sleep_enabled: ");  Serial_println(prefs.light_sleep_enabled);
-  Serial_print("  sleep_enabled: ");  Serial_println(prefs.sleep_enabled);
-  Serial_print("  sleep_hour_start: ");  Serial_println(prefs.sleep_hour_start);
-  Serial_print("  sleep_hour_end: ");    Serial_println(prefs.sleep_hour_end);
+  Serial_print("  sleep_enabled:       ");  Serial_println(prefs.sleep_enabled);
+  Serial_print("  sleep_hour_start:    ");  Serial_println(prefs.sleep_hour_start);
+  Serial_print("  sleep_hour_end:      ");  Serial_println(prefs.sleep_hour_end);
   Serial_println();
 
   Serial_print("  store_wind_data_interval: "); Serial_println(prefs.store_wind_data_interval);
-  Serial_print("  send_data_interval: ");       Serial_println(prefs.send_data_interval);
+  Serial_print("  send_data_interval:       ");       Serial_println(prefs.send_data_interval);
+  Serial_print("  n_send_retries:           ");       Serial_println(prefs.n_send_retries);
   Serial_println();
-  
-  Serial_print("  error_led_on_time: ");   Serial_println(prefs.error_led_on_time);
-  Serial_print("  dir_led_on_time: ");     Serial_println(prefs.dir_led_on_time);
-  Serial_print("  spin_led_on_time: ");    Serial_println(prefs.spin_led_on_time);
-  Serial_print("  blink_led_on_time: ");   Serial_println(prefs.blink_led_on_time);
+
+  Serial_print("  at_timeout_s:    ");       Serial_println(prefs.at_timeout_s);
+  Serial_print("  sim_timeout_s:   ");       Serial_println(prefs.sim_timeout_s);
+  Serial_print("  csq_timeout_s:   ");       Serial_println(prefs.csq_timeout_s);
+  Serial_print("  creg_timeout_s:  ");       Serial_println(prefs.creg_timeout_s);
+  Serial_print("  cgreg_timeout_s: ");       Serial_println(prefs.cgreg_timeout_s);
+  Serial_println();  
+
+  Serial_print("  error_led_on_time:  ");   Serial_println(prefs.error_led_on_time);
+  Serial_print("  dir_led_on_time:    ");     Serial_println(prefs.dir_led_on_time);
+  Serial_print("  spin_led_on_time:   ");    Serial_println(prefs.spin_led_on_time);
+  Serial_print("  blink_led_on_time:  ");   Serial_println(prefs.blink_led_on_time);
   Serial_print("  blink_led_interval: ");  Serial_println(prefs.blink_led_interval);
   Serial_println();
 
-  Serial_print("  as5600_pwr_on_time: ");   Serial_println(prefs.as5600_pwr_on_time);
+  Serial_print("  as5600_pwr_on_time:   ");   Serial_println(prefs.as5600_pwr_on_time);
   Serial_print("  as5600_read_interval: "); Serial_println(prefs.as5600_read_interval);
   Serial_println("---------------------");
 }
 
 
-String version = "2.0";
+String version = "2.1";
 
 void setup() {
   //Serial.begin(115200);
@@ -400,6 +434,8 @@ void setup() {
   Serial_println("### PROGRAM START! ###");
   Serial_print("Compiled on "); Serial_println(__DATE__ " " __TIME__);
   Serial_print("Version:"); Serial_println(prefs.version);
+
+  restoreTimeIfScheduledReset();
 
   loadPreferences();
 
@@ -419,6 +455,11 @@ void setup() {
     case ESP_RST_SW:             /* considered expected here */ break;
     default:                     elog.log(ErrorLogger::ERR_UNEXPECTED_RESET); break;
   }
+  // TODO if the reason is unexpected_reset get more information about it 
+  // We should also check ESP_RST_EXT and treat it as error reason 
+  // the RST_EXT is when EN pin is pulled down 
+
+  // TODO also log which part of the program was in when the reset happened to debug where it crashed
 
 
   if(timeBeforeSleep == 0) {
@@ -426,7 +467,7 @@ void setup() {
   } else {
     // timeWas set before sleep so we can check if is time to wake up already!
     setTime(timeBeforeSleep + DEEP_SLEEP_DURATION / 1000000);
-    Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeString());
+    Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeLibString());
     evaluateIfDeepSleep();
   }
 
@@ -434,10 +475,14 @@ void setup() {
 
   pinMode(GPRS_ON_PIN, INPUT); // off
   pinMode(GPRS_POWER_PIN, OUTPUT); digitalWrite(GPRS_POWER_PIN, HIGH); // off
-  pinMode(BLINK_LED_PIN, OUTPUT);   digitalWrite(BLINK_LED_PIN, HIGH); // on
+  pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
   pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);    // off
   pinMode(DIR_LED_PIN, OUTPUT);    digitalWrite(DIR_LED_PIN, LOW);          // off
-  pinMode(ERROR_LED_PIN, OUTPUT);        digitalWrite(ERROR_LED_PIN, LOW);         // off
+  pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);         // off
+  pinMode(AHT20_1_PWR_PIN, OUTPUT);  digitalWrite(AHT20_1_PWR_PIN, HIGH);
+  pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, HIGH);
+
+  // Power ON AHT20
   //pinMode(TIMER_PIN, OUTPUT); digitalWrite(TIMER_PIN, LOW);
   //pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
   //gpio_set_drive_capability((gpio_num_t) VANE_POWER_PIN, GPIO_DRIVE_CAP_3);
@@ -457,6 +502,11 @@ void setup() {
   // init the as5600 chip so we can read wind direction 
   Wire.begin(SDA_GPIO, SCL_GPIO); // 1 Mhz
   Wire.setClock(1000000UL);
+
+  aht1.SDA_LOW();  // Put everything to low
+  aht1.SCL_LOW();
+  aht2.SDA_LOW(); 
+  aht2.SCL_LOW();
 
   setCpuFrequencyMhz(80);
 
@@ -480,7 +530,9 @@ void setup() {
     .name = "blinkLed_timer"
   };
   esp_timer_create(&blinkLed_args, &blinkLed_timer);
-  esp_timer_start_periodic(blinkLed_timer, prefs.blink_led_on_time * 1000); 
+  if(prefs.blink_led_on_time > 0) {
+    esp_timer_start_periodic(blinkLed_timer, prefs.blink_led_on_time * 1000); 
+  }
 
   esp_timer_handle_t spinLed_timer;
   const esp_timer_create_args_t spinLed_args = {
@@ -490,7 +542,9 @@ void setup() {
     .name = "spinLed_timer"
   };
   esp_timer_create(&spinLed_args, &spinLed_timer);
-  esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time * 1000); 
+  if(prefs.spin_led_on_time > 0) {
+    esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time * 1000); 
+  }
 
   esp_timer_handle_t dirLed_timer;
   const esp_timer_create_args_t dirLed_args = {
@@ -500,7 +554,9 @@ void setup() {
     .name = "dirLed_timer"
   };
   esp_timer_create(&dirLed_args, &dirLed_timer);
-  esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time * 1000);  
+  if(prefs.dir_led_on_time > 0) {
+    esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time * 1000);  
+  }
 
   esp_timer_handle_t errorLed_timer;
   const esp_timer_create_args_t errorLed_args = {
@@ -510,7 +566,10 @@ void setup() {
     .name = "errorLed_timer"
   };
   esp_timer_create(&errorLed_args, &errorLed_timer);
-  esp_timer_start_periodic(errorLed_timer, prefs.error_led_on_time * 1000); 
+  if(prefs.error_led_on_time > 0) {
+    esp_timer_start_periodic(errorLed_timer, prefs.error_led_on_time * 1000); 
+  }
+  
 
   esp_timer_handle_t readSpeed_timer;
   const esp_timer_create_args_t readSpeed_args = {
@@ -543,6 +602,56 @@ void setup() {
   esp_timer_start_periodic(storeWindData_timer, prefs.store_wind_data_interval*1000*1000); // X seconds (in microseconds)
 
   Serial_println("Done init!");   
+}
+
+bool readSensorTempHum_inside(float &tempC, float &humRH) {
+  //digitalWrite(AHT20_1_PWR_PIN, HIGH);
+
+  // Put bus in idle state
+  aht1.SDA_HIGH();
+  aht1.SCL_HIGH();
+  delay(200);
+
+  if (!aht1.aht20_init()) {
+    //digitalWrite(AHT20_1_PWR_PIN, LOW);
+    aht1.SDA_LOW();   // put everything to low
+    aht1.SCL_LOW();
+    return false;
+  }
+
+  bool success = aht1.aht20_read(tempC, humRH);
+  success = aht1.aht20_read(tempC, humRH); // read twice to be safe
+
+  //digitalWrite(AHT20_1_PWR_PIN, LOW);
+
+  aht1.SDA_LOW();
+  aht1.SCL_LOW();
+  return success;
+}
+
+bool readSensorTempHum_outside(float &tempC, float &humRH) {
+  //digitalWrite(AHT20_2_PWR_PIN, HIGH);
+
+  // Put bus in idle state
+  aht2.SDA_HIGH();
+  aht2.SCL_HIGH();
+  delay(200);
+
+  if (!aht1.aht20_init()) {
+    //digitalWrite(AHT20_2_PWR_PIN, LOW);
+    aht2.SDA_LOW();   // put everything to low
+    aht2.SCL_LOW();
+    return false;
+  }
+
+  bool success = aht2.aht20_read(tempC, humRH);
+  success = aht2.aht20_read(tempC, humRH); // read twice to be safe
+
+  //digitalWrite(AHT20_2_PWR_PIN, LOW);
+
+  aht2.SDA_LOW();
+  aht2.SCL_LOW();
+  return success;
 }
 
 uint32_t get_log_timestamp(int hour, int minute, int second) {
@@ -613,7 +722,7 @@ int directions_log[DIRECTIONS_LOG_LEN];
 volatile int directions_log_i = 0;
 
 
-  #define AS5600_PWR_ON_TIME   30 
+#define AS5600_PWR_ON_TIME   30 
 #define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
 #define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
 
@@ -936,7 +1045,7 @@ bool isDeepSleepTime() {
 
 void evaluateIfDeepSleep() {
   if(isDeepSleepTime()) {
-    Serial_print("Current time is:"); Serial_println(getFormattedTimeString());
+    Serial_print("Current time is:"); Serial_println(getFormattedTimeLibString());
     Serial_print("It is time to go deep sleep for: "); Serial_print(DEEP_SLEEP_DURATION/(1000000*60)); 
     Serial_print(" minutes!");
     delay(500); // delay for all the Serial_prints to finish 
@@ -946,6 +1055,9 @@ void evaluateIfDeepSleep() {
     esp_deep_sleep_start();  // after this, it won't return here — will restart from setup()
   }
 }
+
+FloatRunningAverage<32> vBattAvg(read_batt_v);
+FloatRunningAverage<8> vSolarAvg(read_solar_v);
 
 uint32_t lastSend = 0;
 void loop() {
@@ -970,25 +1082,27 @@ void loop() {
 
   if(millis() - lastVBattIdeLog > 5*1000) {
     lastVBattIdeLog = millis();
-    logVbattIde();
+    vBattAvg.log();
+    vSolarAvg.log();
   }
 
   lastNow = millis();
 
   //updateSerial();
 
-  if(prefs.light_sleep_enabled) {
+  bool enoughTimePassed = millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
+  if(enoughTimePassed && prefs.light_sleep_enabled) {
     esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
   } else {
     delay(1);
   }
 }
 
-double read_batt_v() {
+float read_batt_v() {
   return analogRead(V_BATT_PIN) * 0.0006598; 
 }
 
-double read_solar_v() {
+float read_solar_v() {
   return analogRead(V_SOALR_PIN) * 0.003532;
 }
 
@@ -1019,76 +1133,54 @@ void turnOffModule() {
   Serial_println("gprs high -> turning off");
 }
 
-#define V_BATT_IDE_LEN 50
-float vbattIde[V_BATT_IDE_LEN];
-int   vbattHead  = 0;       // next write position
-int   vbattCount = 0;       // how many samples are valid 
-float vbattSum   = 0.0f;    // running sum of valid samples
-
-float getAvgVBattIde(void) {
-    if (vbattCount == 0) return logVbattIde();
-    return vbattSum / (float)vbattCount;
-}
-
-float logVbattIde(void) {
-    float val = read_batt_v();
-
-    if (vbattCount < V_BATT_IDE_LEN) {
-        // still filling the buffer
-        vbattIde[vbattHead] = val;
-        vbattSum += val;
-        vbattHead = (vbattHead + 1) % V_BATT_IDE_LEN;
-        vbattCount++;
-    } else {
-        // buffer full: overwrite oldest (at vbattHead)
-        float old = vbattIde[vbattHead];
-        vbattSum -= old;                // remove oldest from sum
-        vbattIde[vbattHead] = val;      // store new
-        vbattSum += val;                // add newest to sum
-        vbattHead = (vbattHead + 1) % V_BATT_IDE_LEN;
-    }
-    return val;
-}
-
-void resetVBattIde(void) {
-  // reset the circular buffer 
-  vbattHead = 0;
-  vbattCount = 0;
-  vbattSum = 0.0f;
-}
-
-void printVBattIde(void) {
-    if (vbattCount == 0) {
-        Serial_println("  [empty]");
-        return;
-    }
-
-    // Oldest element index
-    int idx = (vbattHead - vbattCount + V_BATT_IDE_LEN) % V_BATT_IDE_LEN;
-
-    for (int i = 0; i < vbattCount; i++) {
-        Serial_print(String(vbattIde[idx], 3));
-        Serial_print(",");
-        idx = (idx + 1) % V_BATT_IDE_LEN;
-    }
-}
-
 unsigned long httpGetStart = 0;
 int signalStrength = -1;
+int simDuration = -1;
 int regDuration = -1;
 int gprsRegDuration = -1;
+float temp_in;
+float hum_in; 
+float temp_out;
+float hum_out; 
+
 void tap2(Button2& btn) {
   fullCycleSend();
 }
 
 void fullCycleSend() {
-  const int nSendRetrys = 3;
+  const int nSendRetrys = prefs.n_send_retries;
   bool sendOk = false;
+
+  // we read temereature and humidity before tu
+  temp_in = NAN; hum_in = NAN;
+  int tempReadTries = 5;
+  while(--tempReadTries > 0 && !readSensorTempHum_inside(temp_in, hum_in));
+
+  Serial_print("temp_in:"); Serial_println(String(temp_in, 2));
+  Serial_print("humy_in:"); Serial_println(String(hum_in, 2));
+
+  if (temp_in == NAN) {
+    elog.log(ErrorLogger::ERR_TEMP_READ);
+  }
+
+  // we read temereature and humidity before tu
+  temp_out = NAN; hum_out = NAN;
+  tempReadTries = 5;
+  while(--tempReadTries > 0 && !readSensorTempHum_outside(temp_out, hum_out));
+
+  Serial_print("temp_out:"); Serial_println(String(temp_out, 2));
+  Serial_print("humy_out:"); Serial_println(String(hum_out, 2));
+
+  if (temp_out == NAN) {
+    elog.log(ErrorLogger::ERR_TEMP_READ);
+  }
+
 
   for(int i=0; i<nSendRetrys && !sendOk; i++) {
     Serial_print("Sending try n:"); Serial_println(i);
     
     signalStrength = -1;
+    simDuration = -1;
     regDuration = -1;
     gprsRegDuration = -1;
     turnOnModule();
@@ -1119,12 +1211,29 @@ void printDiagnosticInfo() {
   Serial_print("\n");
   Serial_print("WIND_LOG_STORE_LEN: "); Serial_println(WIND_LOG_STORE_LEN);
   Serial_print("w_count: "); Serial_println(w_count);
-  Serial_print("Time: "); Serial_println(getFormattedTimeString());
+  Serial_print("Time: "); Serial_println(getFormattedTimeLibString());
   Serial_print("Last send: "); Serial_print((millis() - lastSend)/(1000*60)); Serial_println(" min ago"); 
-  Serial_print("v batt ide:"); Serial_println(String(getAvgVBattIde(), 3));
+  Serial_print("v batt avg:"); Serial_println(String(vBattAvg.get(), 3));
+  Serial_print("v solar avg:"); Serial_println(String(vSolarAvg.get(), 3));
   Serial_print("v batt:"); Serial_println(String(read_batt_v(), 3));
   Serial_print("v solar:"); Serial_println(String(read_solar_v(), 3));
-  //Serial_print("ide array:"); printVBattIde(); Serial_println();
+
+  float t = 0.0f; float h = 0.0f;
+  if(readSensorTempHum_inside(t, h)) { 
+    Serial_print("temp_in:"); Serial_println(String(t, 2));
+    Serial_print("humy_in:"); Serial_println(String(h, 2));
+  } else {
+    Serial_println("temp_in: failed to read");
+    Serial_println("humy_in: failed to read");
+  }
+
+  if(readSensorTempHum_outside(t, h)) { 
+    Serial_print("temp_out:"); Serial_println(String(t, 2));
+    Serial_print("humy_out:"); Serial_println(String(h, 2));
+  } else {
+    Serial_println("temp_out: failed to read");
+    Serial_println("humy_out: failed to read");
+  }
 
   // Serial_println("wind data: " + getWindData());
   // TODO implement idk Serial_println("last_dir_read: " + String(last_direction_read));
@@ -1314,11 +1423,22 @@ bool parseCGREGResponse(const String& response) {
   return status == 1 || status == 5; // Registered (home or roaming)
 }
 
-String getFormattedTimeString() {
+String getFormattedTimeLibString() {
   char buf[24];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
            year(), month(), day(), hour(), minute(), second());
   return String(buf);
+}
+
+String getFormattedUnixTime(uint32_t unix_time) {
+    tmElements_t tm;
+    breakTime(unix_time, tm);  // fill 'tm' with the date/time fields
+
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d_%02d:%02d:%02d", // we print with _ because this function is used in post body
+             tm.Year + 1970, tm.Month, tm.Day, tm.Hour, tm.Minute, tm.Second);
+
+    return String(buf);
 }
 
 String imsiNum; 
@@ -1414,7 +1534,7 @@ bool parseCCLKResponse(const String& response) {
   setTime(hour, minute, second, day, month, year);
 
   // Print the parsed time
-  Serial_print("New date:"); Serial_println(getFormattedTimeString());
+  Serial_print("New date:"); Serial_println(getFormattedTimeLibString());
   
   return true;
 }
@@ -1429,7 +1549,7 @@ params:\n
 <param name>:<param_value>\n
 <param name>:<param_value>\n
 */
-void saveNewPrefValue(String key, String value) {
+bool saveNewPrefValue(String key, String value) {
   Serial_print("Saving the new pref: '");
   Serial_print(key); Serial_print("':'"); Serial_print(value); Serial_println("'");
 
@@ -1439,8 +1559,14 @@ void saveNewPrefValue(String key, String value) {
   else if(key == "version") {
     value.toCharArray(prefs.version, sizeof(prefs.version));
   } 
-  else if(key == "url_to_send") {
-    value.toCharArray(prefs.url_to_send, sizeof(prefs.url_to_send));
+  else if(key == "url_data") {
+    value.toCharArray(prefs.url_data, sizeof(prefs.url_data));
+  }
+  else if(key == "url_prefs") {
+    value.toCharArray(prefs.url_prefs, sizeof(prefs.url_prefs));
+  }
+  else if(key == "url_errors") {
+    value.toCharArray(prefs.url_errors, sizeof(prefs.url_errors));
   }
   else if(key == "store_wind_data_interval") {
     prefs.store_wind_data_interval = value.toInt();
@@ -1481,16 +1607,85 @@ void saveNewPrefValue(String key, String value) {
   else if(key == "send_data_interval") {
     prefs.send_data_interval = value.toInt();
   }
+  else if(key == "n_send_retries") {
+    prefs.n_send_retries = value.toInt();
+  }
+
+  else if(key == "at_timeout_s") {
+    prefs.at_timeout_s = value.toInt();
+  }
+  else if(key == "sim_timeout_s") {
+    prefs.sim_timeout_s = value.toInt();
+  }
+  else if(key == "csq_timeout_s") {
+    prefs.csq_timeout_s = value.toInt();
+  }
+  else if(key == "creg_timeout_s") {
+    prefs.creg_timeout_s = value.toInt();
+  }
+  else if(key == "cgreg_timeout_s") {
+    prefs.cgreg_timeout_s = value.toInt();
+  }
+
   else {
     Serial_print("Unable to find the prefs key: '"); Serial_print(key); Serial_println("'");
+    return false; // no new key was set
   }
+
+  return true; // a new prefs key was set
 }
 
 
-void parseReturnData(String data) {
+Preferences prefsStorage;
+static const char *PREF_NAMESPACE = "time";
+static const uint32_t ESTIMATED_RESET_SECONDS = 2; 
+
+void saveTimeAndScheduleReset() {
+    time_t current = now();  // TimeLib current UNIX time
+
+    prefsStorage.begin(PREF_NAMESPACE, false);
+    prefsStorage.putULong64("saved_time", (uint64_t)current);
+    prefsStorage.putBool("sched_reset", true);
+    prefsStorage.end();
+
+    Serial_println("Scheduled reset, saving time and restarting...");
+    delay(2000); // wait so that everything can print before reseting 
+
+    esp_restart();  // software reset
+}
+
+void restoreTimeIfScheduledReset() {
+    prefsStorage.begin(PREF_NAMESPACE, false);
+    bool scheduled = prefsStorage.getBool("sched_reset", false);
+    uint64_t saved = prefsStorage.getULong64("saved_time", 0);
+    prefsStorage.putBool("sched_reset", false);   // clear flag so it’s one-shot
+    prefsStorage.end();
+
+    if (scheduled && saved > 0) {
+        time_t restored = (time_t)saved + ESTIMATED_RESET_SECONDS;
+
+        setTime(restored); // Restore time into TimeLib
+
+        Serial_print("Restored time after scheduled reset: ");  Serial_println(restored);
+        Serial_print("Restored datetime: "); Serial_println(getFormattedTimeLibString());
+    } else {
+        Serial_println("No scheduled reset time to restore.");
+    }
+}
+
+bool shouldSendPrefs = false; 
+bool shouldSendErrorNames = false; 
+bool shouldReset = false; 
+void parseReturnData(String& data) {
+  shouldReset = true; 
+  shouldSendPrefs = true; // on default we always reset the esp after changing preferences
+  shouldSendErrorNames = false;
+  bool newPrefsSet = false;
   int prefsPos = data.indexOf("prefs:");
   if (prefsPos < 0) {
     Serial_println("No 'params' section found.");
+    shouldReset = false; 
+    shouldSendPrefs = false;
     return;
   }
 
@@ -1498,9 +1693,12 @@ void parseReturnData(String data) {
   int pos = data.indexOf('\n', prefsPos);
   if (pos < 0) {
     Serial_println("No newline after 'params'.");
+    shouldReset = false; 
+    shouldSendPrefs = false;
     return;
   }
   pos++; // move past newline
+
 
   while (pos < data.length()) {
     // Find the next colon — separates key from value
@@ -1519,18 +1717,30 @@ void parseReturnData(String data) {
     key.trim();
     value.trim();
 
-    saveNewPrefValue(key, value);
+    if(key == "no_reset") shouldReset = false; 
+    else if(key == "no_send_prefs") shouldSendPrefs = false; 
+    else if(key == "set_phone_num") setPhoneNumber(value);
+    else if(key == "send_error_names") shouldSendErrorNames = true;
+    else {
+      bool prefsSet = saveNewPrefValue(key, value); 
+      if(prefsSet) newPrefsSet = true;      
+    }         
+    
     // Advance to next line
     pos = lineEnd + 1;
   }
 
-  savePreferences();
-  Serial_println("Done params section.\n");
-  Serial_println("Reseting the module to apply the settings soon.\n\n");
-  delay(2000); // wait so that everything can print before reseting 
-  esp_restart();
+  if(newPrefsSet) {
+    prefs.pref_set_date = now();  // save when the preferences were set (TimeLib current UNIX time)
+    savePreferences();
+    Serial_println("Done params section.\n");
+  } else {
+    Serial_println("No new preferences set.\n");
+  }
+  
 }
 
+String postReturnData;
 bool parseHTTPREADResponse(const String& response) {
   int startIdx = response.indexOf("+HTTPREAD:");
   if (startIdx == -1) {
@@ -1553,13 +1763,16 @@ bool parseHTTPREADResponse(const String& response) {
     data.trim();
   }
 
-  Serial_print("Parsing return data: \r\n'");
-  data.replace("\n", "\r\n");
-  Serial_print(data);
-  data.replace("\r\n", "\n");
+  // Print the data
+  Serial_print("Parsing return data:'");
+  for (char c : data) {
+      if (c == '\n') Serial_println(); 
+      else Serial_write(c);
+  }
   Serial_println("'");
 
-  parseReturnData(data);
+  // store globally
+  postReturnData = data;
   return true;
 }
 
@@ -1610,15 +1823,22 @@ String zeros(int length) {
 
 String getPostBody() {
   String body = "";
+  body.reserve(512);   // avoid fragmentation, improve speed
   body += "pref=" + String(prefs.pref_version) + ";";
+  body += "prefDate=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
   body += "ver=" + String(prefs.version) + ";";
   body += "imsi=" + imsiNum + ";";
   body += "phoneNum=" + phoneNum + ";";
-  body += "vbatIde=" + String(getAvgVBattIde(), 3) + ";";
+  body += "temp_in=" + String(temp_in, 1) + ";";
+  body += "hum_in=" + String(hum_in, 0) + ";";
+  body += "temp_out=" + String(temp_out, 1) + ";";
+  body += "hum_out=" + String(hum_out, 0) + ";";
+  body += "vbatIde=" + String(vBattAvg.get(), 3) + ";";
   body += "vbatGprs=" + String(read_batt_v(), 3) + ";";
-  body += "vsol=" + String(read_solar_v(), 1) + ";";
+  body += "vsol=" + String(vSolarAvg.get(), 3) + ";"; 
   body += "dur=" + String((millis() - httpGetStart) / 1000.0, 1) + ";";
   body += "signal=" + String(signalStrength) + ";";
+  body += "simDur=" + String(simDuration / 1000.0, 1) + ";";
   body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
   body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
   body += "errors=" + elog.getAllForSend() + ";";
@@ -1626,6 +1846,83 @@ String getPostBody() {
 
   return body;
 }
+
+String getPostBodyPrefs() {
+  String body;
+  body.reserve(512);   // avoid fragmentation, improve speed
+
+  body += "pref_version=" + String(prefs.pref_version) + ";";
+  body += "pref_set_date=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
+  body += "version=" + String(prefs.version) + ";";
+  body += "url_data=" + String(prefs.url_data) + ";";
+  body += "url_prefs=" + String(prefs.url_prefs) + ";";
+  body += "url_errors=" + String(prefs.url_errors) + ";";
+
+  body += "light_sleep_enabled=" + String(prefs.light_sleep_enabled) + ";";
+  body += "sleep_enabled=" + String(prefs.sleep_enabled) + ";";
+  body += "sleep_hour_start=" + String(prefs.sleep_hour_start) + ";";
+  body += "sleep_hour_end=" + String(prefs.sleep_hour_end) + ";";
+
+  body += "store_wind_data_interval=" + String(prefs.store_wind_data_interval) + ";";
+  body += "send_data_interval=" + String(prefs.send_data_interval) + ";";
+  body += "n_send_retries=" + String(prefs.n_send_retries) + ";";
+
+  body += "at_timeout_s=" + String(prefs.at_timeout_s) + ";";
+  body += "sim_timeout_s=" + String(prefs.sim_timeout_s) + ";";
+  body += "csq_timeout_s=" + String(prefs.csq_timeout_s) + ";";
+  body += "creg_timeout_s=" + String(prefs.creg_timeout_s) + ";";
+  body += "cgreg_timeout_s=" + String(prefs.cgreg_timeout_s) + ";";
+
+  body += "error_led_on_time=" + String(prefs.error_led_on_time) + ";";
+  body += "dir_led_on_time=" + String(prefs.dir_led_on_time) + ";";
+  body += "spin_led_on_time=" + String(prefs.spin_led_on_time) + ";";
+  body += "blink_led_on_time=" + String(prefs.blink_led_on_time) + ";";
+  body += "blink_led_interval=" + String(prefs.blink_led_interval) + ";";
+
+  body += "as5600_pwr_on_time=" + String(prefs.as5600_pwr_on_time) + ";";
+  body += "as5600_read_interval=" + String(prefs.as5600_read_interval) + ";";
+
+  return body;
+}
+
+String getPostErrorsList() {
+  String body;
+  body.reserve(512); 
+  body += "errors=";
+  body += "ERR_NONE:0,";
+
+  body += "ERR_SEND_AT_FAIL:1,";
+  body += "ERR_SEND_NO_SIM:2,";
+  body += "ERR_SEND_CSQ_FAIL:3,";
+  body += "ERR_SEND_REG_FAIL:4,";
+  body += "ERR_SEND_CIMI_FAIL:5,";
+  body += "ERR_SEND_GPRS_FAIL:6,";
+  body += "ERR_SEND_HTTP_FAIL_DATA:7,";
+  body += "ERR_SEND_HTTP_FAIL_PREFS:8,";
+  body += "ERR_SEND_REPEAT:9,";
+
+  body += "ERR_DIR_READ:20,";
+  body += "ERR_DIR_READ_ONCE:21,";
+  body += "ERR_WIND_BUF_OVERWRITE:22,";
+  body += "ERR_WIND_SHORT_BUF_FULL:23,";
+  body += "ERR_SPEED_SHORT_BUF_FULL:24,";
+  body += "ERR_DIR_SHORT_BUF_FULL:25,";
+  body += "ERR_TEMP_READ:26,";
+
+  body += "ERR_POWERON_RESET:31,";
+  body += "ERR_BROWNOUT_RESET:32,";
+  body += "ERR_PANIC_RESET:33,";
+  body += "ERR_WDT_RESET:34,";
+  body += "ERR_SDIO_RESET:35,";
+  body += "ERR_USB_RESET:36,";
+  body += "ERR_JTAG_RESET:37,";
+  body += "ERR_EFUSE_RESET:38,";
+  body += "ERR_PWR_GLITCH_RESET:39,";
+  body += "ERR_CPU_LOCKUP_RESET:40,";
+  body += "ERR_UNEXPECTED_RESET:41;";
+  return body;
+}
+
 
 String waitForHttpActionResponse(unsigned long timeoutMs) {
   unsigned long start = millis();
@@ -1650,26 +1947,17 @@ String waitForHttpActionResponse(unsigned long timeoutMs) {
   return "";  // timeout
 }
 
-bool sendPOST() {
-  if (sendCommand("AT+HTTPINIT", 1000) == "") return false;
-  if (sendCommand("AT+HTTPPARA=\"CID\",1", 500) == "") return false;
-  if (sendCommand(String("AT+HTTPPARA=\"URL\",\"") + prefs.url_to_send + imsiNum + "\"", 500) == "") return false;
+bool sendPOST(const String &url, const String &body) {
+    if (sendCommand("AT+HTTPPARA=\"CID\",1", 500) == "") return false;
+    if (sendCommand("AT+HTTPPARA=\"URL\",\"" + url + "\"", 500) == "") return false;
 
-  String postData = getPostBody();
-  if (sendCommand("AT+HTTPDATA=" + String(postData.length()) + ",10000", 500, "DOWNLOAD") == "") return false;
-  if (sendCommand(postData, 1000) == "") return false;
-  Serial_println("Done sending postData!");
+    if (sendCommand("AT+HTTPDATA=" + String(body.length()) + ",10000", 500, "DOWNLOAD") == "") return false;
+    if (sendCommand(body, 1000) == "") return false;
 
-  if (sendCommand("AT+HTTPACTION=1", 5000) == "") return false; // 0 = GET, 1 = POST, 2 = HEAD
-  String actionResult = waitForHttpActionResponse(10000);  // wait up to 10s
+    if (sendCommand("AT+HTTPACTION=1", 5000) == "") return false;
 
-  if (actionResult.indexOf(",2") > 0) {
-    return true;
-  } else {
-    return false;
-  }
-
-  return true;
+    String actionResult = waitForHttpActionResponse(10000);
+    return (actionResult.indexOf(",2") > 0);
 }
 
 
@@ -1695,7 +1983,7 @@ void logSendErrorForResult(SendResult r) {
     case SendResult::REG_FAIL:        elog.log(ErrorLogger::ERR_SEND_REG_FAIL);  break;
     case SendResult::CIMI_FAIL:       elog.log(ErrorLogger::ERR_SEND_CIMI_FAIL); break;
     case SendResult::GPRS_SETUP_FAIL: elog.log(ErrorLogger::ERR_SEND_GPRS_FAIL); break;
-    case SendResult::HTTP_FAIL:       elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL); break;
+    case SendResult::HTTP_FAIL:       elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_DATA); break;
     default: break; // OK or unknown: no log here
   }
 }
@@ -1703,31 +1991,32 @@ void logSendErrorForResult(SendResult r) {
 SendResult runHttpGetHot() {
   Serial_println("\n\nExecuting HTTP GET HOT...");
 
-  if (!waitForResponse("AT", 10, nullptr)) return SendResult::AT_FAIL;
-
-  if (!waitForResponse("AT+CSMINS?", 20, parseCSMINSResponse, 200)) {
-    Serial_println("No Sim detected!.");
-    elog.log(ErrorLogger::ERR_SEND_NO_SIM);
-    return SendResult::NO_SIM;
-  }
-
-  if (!waitForResponse("AT+CSQ", 20, parseCSQResponse, 2000)) return SendResult::CSQ_FAIL;
+  if (!waitForResponse("AT", prefs.at_timeout_s, nullptr)) return SendResult::AT_FAIL;
 
   unsigned long start = millis();
-  if (!waitForResponse("AT+CREG?", 120, parseCGREGResponse, 2000)) return SendResult::REG_FAIL;
+  if (!waitForResponse("AT+CSMINS?", prefs.sim_timeout_s, parseCSMINSResponse, 100)) {
+    Serial_println("No Sim detected!.");
+    return SendResult::NO_SIM;
+  }
+  simDuration = millis() - start;
+
+  if (!waitForResponse("AT+CSQ", prefs.csq_timeout_s, parseCSQResponse, 500)) return SendResult::CSQ_FAIL;
+
+  start = millis();
+  if (!waitForResponse("AT+CREG?", prefs.creg_timeout_s, parseCGREGResponse, 500)) return SendResult::REG_FAIL;
   regDuration = millis() - start;
 
   start = millis();
-  if (!waitForResponse("AT+CGREG?", 120, parseCGREGResponse, 2000)) return SendResult::REG_FAIL;
+  if (!waitForResponse("AT+CGREG?", prefs.cgreg_timeout_s, parseCGREGResponse, 500)) return SendResult::REG_FAIL;
   gprsRegDuration = millis() - start;
 
-  if (!waitForResponse("AT+CCLK?", 10, parseCCLKResponse, 2000)) {
+  if (!waitForResponse("AT+CCLK?", 10, parseCCLKResponse, 500)) {
     // probably missing automatic time update NITZ
     sendCommand("AT+CLTS=1");
     sendCommand("AT&W");
   }
 
-  if (!waitForResponse("AT+CIMI", 10, parseCIMIResponse, 2000)) return SendResult::CIMI_FAIL;
+  if (!waitForResponse("AT+CIMI", 10, parseCIMIResponse, 500)) return SendResult::CIMI_FAIL;
   Serial_print("Got IMSI:"); Serial_println(imsiNum);
 
   readPhoneNum();
@@ -1743,10 +2032,41 @@ SendResult runHttpGetHot() {
   if (sendCommand("AT+SAPBR=1,1", 15000) == "") return SendResult::GPRS_SETUP_FAIL;
   if (sendCommand("AT+SAPBR=2,1", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
 
-  if (!sendPOST()) return SendResult::HTTP_FAIL;
+  if (sendCommand("AT+HTTPINIT", 1000) == "") return SendResult::HTTP_FAIL;
+
+  if (!sendPOST(prefs.url_data + imsiNum, getPostBody())) return SendResult::HTTP_FAIL;
   
   waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+  if(!postReturnData.isEmpty()) {
+    parseReturnData(postReturnData);
+  }
   
+  if(shouldSendPrefs) {
+    bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefs());
+    if (!postSuccess) {
+      Serial_print("Sending preferences failed!");
+      elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_PREFS);
+    } else {
+      waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+    }
+  }
+
+  if(shouldSendErrorNames) {
+    bool postSuccess = sendPOST(prefs.url_errors + imsiNum, getPostErrorsList());
+    if (!postSuccess) {
+      Serial_print("Sending errors failed!");
+      elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_PREFS);
+    } else {
+      waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+    }
+  }
+
+  if(shouldReset) {
+    Serial_println("Reseting the module to apply the settings soon.\n\n");
+    saveTimeAndScheduleReset();
+  } {
+    Serial_println("No reset requested");
+  }
 
   // Step 5: Cleanup
   sendCommand("AT+HTTPTERM");

@@ -115,33 +115,42 @@ public:
 
     static const char* errorToString(ErrorCode code) {
         switch (code) {
-            // ... (Your errorToString implementation remains the same) ...
-            case ERR_NONE:            return "No error";
-            case ERR_DIR_READ:        return "Direction read";
-            case ERR_SEND_AT_FAIL:    return "AT command failure";
-            case ERR_SEND_NO_SIM:     return "No SIM card detected";
-            case ERR_SEND_CSQ_FAIL:   return "Signal quality (CSQ) check failed";
-            case ERR_SEND_REG_FAIL:   return "Network registration failed";
-            case ERR_SEND_CIMI_FAIL:  return "IMSI (CIMI) retrieval failed";
-            case ERR_SEND_GPRS_FAIL:  return "GPRS/Data connection failed";
+            case ERR_NONE:                 return "No error";
+
+            // Communication / modem
+            case ERR_SEND_AT_FAIL:         return "AT command failure";
+            case ERR_SEND_NO_SIM:          return "No SIM card detected";
+            case ERR_SEND_CSQ_FAIL:        return "Signal quality (CSQ) check failed";
+            case ERR_SEND_REG_FAIL:        return "Network registration failed";
+            case ERR_SEND_CIMI_FAIL:       return "IMSI (CIMI) retrieval failed";
+            case ERR_SEND_GPRS_FAIL:       return "GPRS/Data connection failed";
             case ERR_SEND_HTTP_FAIL_DATA:  return "HTTP data send failed";
-            case ERR_SEND_HTTP_FAIL_PREFS:  return "HTTP prefs send failed";
-            case ERR_SEND_REPEAT:     return "Send had to be repeated";
+            case ERR_SEND_HTTP_FAIL_PREFS: return "HTTP prefs send failed";
+            case ERR_SEND_REPEAT:          return "Send had to be repeated";
 
-            case ERR_POWERON_RESET:    return "Power-on reset (info)";
-            case ERR_BROWNOUT_RESET:   return "Brown-out/low-voltage reset";
-            case ERR_PANIC_RESET:      return "Software panic/abort reset";
-            case ERR_WDT_RESET:        return "Watchdog Timer reset";
-            case ERR_SDIO_RESET:       return "SDIO-triggered reset";
-            case ERR_USB_RESET:        return "USB-triggered reset";
-            case ERR_JTAG_RESET:       return "JTAG-triggered reset";
-            case ERR_EFUSE_RESET:      return "EFUSE error reset";
-            case ERR_PWR_GLITCH_RESET: return "Power glitch reset";
-            case ERR_CPU_LOCKUP_RESET: return "CPU lockup/double exception reset";
-            case ERR_UNEXPECTED_RESET: return "Unexpected/unclassified reset";
-            case ERR_DIR_READ_ONCE:    return "Read dir error had to be repeated.";
+            // Wind / sensor / buffers
+            case ERR_DIR_READ:             return "Direction read error";
+            case ERR_DIR_READ_ONCE:        return "Direction read error (single occurrence)";
+            case ERR_WIND_BUF_OVERWRITE:   return "Wind buffer overwrite";
+            case ERR_WIND_SHORT_BUF_FULL:  return "Wind short buffer full";
+            case ERR_SPEED_SHORT_BUF_FULL: return "Speed short buffer full";
+            case ERR_DIR_SHORT_BUF_FULL:   return "Direction short buffer full";
+            case ERR_TEMP_READ:            return "Temperature read error";
 
-            default:                  return "Unknown ErrorCode";
+            // Power and reset related
+            case ERR_POWERON_RESET:        return "Power-on reset (info)";
+            case ERR_BROWNOUT_RESET:       return "Brown-out / low-voltage reset";
+            case ERR_PANIC_RESET:          return "Software panic / abort reset";
+            case ERR_WDT_RESET:            return "Watchdog Timer reset";
+            case ERR_SDIO_RESET:           return "SDIO-triggered reset";
+            case ERR_USB_RESET:            return "USB-triggered reset";
+            case ERR_JTAG_RESET:           return "JTAG-triggered reset";
+            case ERR_EFUSE_RESET:          return "EFUSE error reset";
+            case ERR_PWR_GLITCH_RESET:     return "Power glitch reset";
+            case ERR_CPU_LOCKUP_RESET:     return "CPU lockup / double exception reset";
+            case ERR_UNEXPECTED_RESET:     return "Unexpected / unclassified reset";
+
+            default:                      return "Unknown ErrorCode";
         }
     }
 

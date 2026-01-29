@@ -10,13 +10,19 @@ const int i2c_SDA_PIN  = 34;   // your custom SDA pin
 const int i2c_SCL_PIN  = 21;   // your custom SCL pin
 */
 
-const int PIN_VIN      = 40;   // power to AHT20 (optional, can use 3V3 instead)
-const int i2c_SDA_PIN  = 36;   // your custom SDA pin
-const int i2c_SCL_PIN  = 38;   // your custom SCL pin
+// ############
+// DEAFULT pins are SDA=33 SCL=35
+
+//const int PIN_VIN      = 40;   // power to AHT20 (optional, can use 3V3 instead)
+const int i2c_SDA_PIN  = 11;   // your custom SDA pin
+const int i2c_SCL_PIN  = 12;   // your custom SCL pin
 
 
 #include <Arduino.h>
 #include "driver/gpio.h"  // for gpio_set_drive_capability
+
+#include <Wire.h>
+
 
 // common pin config
 #define SDA_PIN i2c_SDA_PIN
@@ -34,7 +40,8 @@ const int i2c_SCL_PIN  = 38;   // your custom SCL pin
 
 #else
   #include <Wire.h>
-  #define ACTIVE_WIRE Wire
+  #define ACTIVE_WIRE  Wire
+  #define ACTIVE_WIRE2 Wire1
 #endif
 
 
@@ -42,29 +49,26 @@ void doScan() {
   Serial.println("I2C scanner. Scanning ...");
   byte count = 0;
 
-#if defined(USE_SOFTWARE_WIRE)
-  // SoftwareWire: pins already set in constructor
-  ACTIVE_WIRE.begin();
-
-#elif defined(USE_SOFTWARE_WIRE_ESP32)
-  // ESP32_SoftWire: pins & speed already set in setup(), this just (re)enables
-  ACTIVE_WIRE.begin(SDA_PIN, SCL_PIN, 400000);
-
-#else
-  // hardware Wire on ESP32: set pins here
-  ACTIVE_WIRE.begin(SDA_PIN, SCL_PIN);
-#endif
+  //Serial.printf("SDA=%d SCL=%d\n", (int)SDA, (int)SCL);
 
   for (byte i = 8; i < 120; i++) {
     Serial.print(".");
-    ACTIVE_WIRE.beginTransmission(i);
-    if (ACTIVE_WIRE.endTransmission() == 0) {
+    Serial1.print(".");
+    Wire.beginTransmission(i);
+    if (Wire.endTransmission() == 0) {
       Serial.println();
       Serial.print("Found address: ");
       Serial.print(i, DEC);
       Serial.print(" (0x");
       Serial.print(i, HEX);
       Serial.println(")");
+
+      Serial1.println();
+      Serial1.print("Found address: ");
+      Serial1.print(i, DEC);
+      Serial1.print(" (0x");
+      Serial1.print(i, HEX);
+      Serial1.println(")");
       count++;
       delay(1);
     }
@@ -74,6 +78,52 @@ void doScan() {
   Serial.print("Found ");
   Serial.print(count, DEC);
   Serial.println(" device(s).");
+
+  Serial1.println("Done.");
+  Serial1.print("Found ");
+  Serial1.print(count, DEC);
+  Serial1.println(" device(s).");
+}
+
+
+void doScan2() {
+  Serial.println("I2C scanner 2. Scanning ...");
+  byte count = 0;
+
+  //Serial.printf("SDA=%d SCL=%d\n", (int)SDA, (int)SCL);
+
+  for (byte i = 8; i < 120; i++) {
+    Serial.print(".");
+    Serial1.print(".");
+    Wire1.beginTransmission(i);
+    if (Wire1.endTransmission() == 0) {
+      Serial.println();
+      Serial.print("Found address: ");
+      Serial.print(i, DEC);
+      Serial.print(" (0x");
+      Serial.print(i, HEX);
+      Serial.println(")");
+
+      Serial1.println();
+      Serial1.print("Found address: ");
+      Serial1.print(i, DEC);
+      Serial1.print(" (0x");
+      Serial1.print(i, HEX);
+      Serial1.println(")");
+      count++;
+      delay(1);
+    }
+  }
+
+  Serial.println("Done.");
+  Serial.print("Found ");
+  Serial.print(count, DEC);
+  Serial.println(" device(s).");
+
+  Serial1.println("Done.");
+  Serial1.print("Found ");
+  Serial1.print(count, DEC);
+  Serial1.println(" device(s).");
 }
 
 //#define AS600_POWER_PIN 4
@@ -83,17 +133,26 @@ void setup() {
   //digitalWrite(AS600_POWER_PIN, HIGH);
   //gpio_set_drive_capability((gpio_num_t) AS600_POWER_PIN, GPIO_DRIVE_CAP_3);
 
-  pinMode(PIN_VIN, OUTPUT);  digitalWrite(PIN_VIN, HIGH);
+ // pinMode(PIN_VIN, OUTPUT);  digitalWrite(PIN_VIN, HIGH);
   //pinMode(PIN_GND, OUTPUT);  digitalWrite(PIN_GND, LOW);
-
-  Serial.begin(115200);
   while (!Serial) {
     delay(10);
   }
+  Serial.begin(115200);
+
+  Serial1.begin(9600, SERIAL_8N1, 7, 9);
+
+  Wire.begin(33, 35, 400000);
+  //Wire1.begin(37, 39, 400000);
+  Wire1.begin(37, 39, 400000);
 }
 
 void loop() {
   doScan();
+  doScan2();
   delay(1000);
+  static int on = 1;
+  pinMode(15, OUTPUT);  digitalWrite(15, on? HIGH : LOW);
+  on = !on;
 }
 

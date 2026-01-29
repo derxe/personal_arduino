@@ -9,7 +9,7 @@ void tap2(Button2& btn);
 #define BUTTON_PIN        9
 #define BUTTON_PIN_2      11
 
-#define HAL_POWER_PIN     5
+//#define HAL_POWER_PIN     5
 #define HAL_SENSOR_PIN    7
 
 #define ANEMO_PIN         12
@@ -30,8 +30,8 @@ void setup() {
   //Serial1.begin(115200, SERIAL_8N1, UART_DEBUG_RX, UART_DEBUG_TX);
   Serial.begin(115200);
   //while(!Serial) delay(1000);
-  pinMode(HAL_POWER_PIN, OUTPUT); digitalWrite(HAL_POWER_PIN, HIGH);  
-  gpio_set_drive_capability((gpio_num_t) HAL_POWER_PIN, GPIO_DRIVE_CAP_3);
+  //pinMode(HAL_POWER_PIN, OUTPUT); digitalWrite(HAL_POWER_PIN, HIGH);  
+  //gpio_set_drive_capability((gpio_num_t) HAL_POWER_PIN, GPIO_DRIVE_CAP_3);
 
   pinMode(HAL_SENSOR_PIN, INPUT_PULLUP);
   pinMode(ANEMO_PIN, INPUT_PULLUP);
@@ -133,9 +133,15 @@ float readSpeed() {
   return speed;
 }
 
+
+float pulse_per_second_to_kmh(uint32_t pulses_per_second) {
+  const int MIN_PULSE_COUNT = 2; // it doesnt work at low speeds, minimum measured speed is around 3.5 kmh
+  return pulses_per_second > MIN_PULSE_COUNT? (pulses_per_second+80) / 26.3 : 0; 
+}
+
 float readAnemoSpeed() {
-  float anemoSpeed = anemoCount*14.3/300;
-  Serial.print("Anemo: "); Serial.println(anemoSpeed, 2);
+  float anemoSpeed = pulse_per_second_to_kmh(anemoCount);
+  Serial.print("Anemo: "); Serial.print(anemoCount); Serial.print(" "); Serial.println(anemoSpeed, 2);
   anemoCount = 0; 
   return anemoSpeed;
 }

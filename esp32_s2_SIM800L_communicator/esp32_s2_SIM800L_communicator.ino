@@ -52,15 +52,20 @@ struct AppPrefs {
 
   uint8_t  as5600_pwr_on_time;   // ms of how long to wait after power on before reading it, It is also an interupt cycle
   uint8_t  as5600_read_interval; // deca seconds 10 for 1 seconds, // how ofter we want to read direction
+  
+  uint16_t wind_log_store_len;   // how many wind data we can store, to be send on the next interaction 
+
+  float  vbat_calib;             // calibration for converting the measured voltage on vbat to the actual voltage
+  float  vsolar_calib;           // calibration for converting the measured voltage on vsolar to the actual voltage
 };
 
-#define SCHEMA_VERSION  18
+#define SCHEMA_VERSION  20
 
 // define default preferences:
 AppPrefs prefs = {
-  /*pref_version*/              4,
+  /*pref_version*/              12,
   /*pref_set_date*/             0, 
-  /*version*/                   "v4",
+  /*version*/                   "v5",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_errors/",
@@ -87,8 +92,14 @@ AppPrefs prefs = {
   /*blink_led_interval*/        20,  
 
   /*as5600_pwr_on_time*/        30,
-  /*as5600_read_interval*/      30
+  /*as5600_read_interval*/      30,
+
+  /*wind_log_store_len*/        600,
+
+  /*vbat_calib*/                0.0006598,
+  /*vsolar_calib*/              0.003532
 };
+
 
 enum class SendResult : int {
   OK                   =  1,   // success
@@ -416,13 +427,21 @@ void printPreferences() {
   Serial_print("  blink_led_interval: ");  Serial_println(prefs.blink_led_interval);
   Serial_println();
 
-  Serial_print("  as5600_pwr_on_time:   ");   Serial_println(prefs.as5600_pwr_on_time);
+  Serial_print("  as5600_pwr_on_time:   "); Serial_println(prefs.as5600_pwr_on_time);
   Serial_print("  as5600_read_interval: "); Serial_println(prefs.as5600_read_interval);
+  Serial_println();
+
+  Serial_print("  wind_log_store_len:   "); Serial_println(prefs.wind_log_store_len);
+  Serial_println();
+
+  Serial_print("  vbat_calib:   ");   Serial_println(String(prefs.vbat_calib, 9));
+  Serial_print("  vsolar_calib: "); Serial_println(String(prefs.vsolar_calib, 9));
   Serial_println("---------------------");
 }
 
 
 String version = "2.1";
+bool accurateTimeSet = false;
 
 void setup() {
   //Serial.begin(115200);
@@ -740,6 +759,8 @@ void IRAM_ATTR onReadDirection(void* arg) {
   //Serial.flush();
   if(directionReadCount == 1) {
     digitalWrite(AS600_POWER_PIN, HIGH);
+
+    if(digitalRead(AS5600_SCL))
   }
 
   else if(directionReadCount == 2) {
@@ -882,7 +903,7 @@ uint16_t windlog_len(void) {
 uint16_t windlog_oldest_index(void) {
     if (w_count == 0) return 0;
     // (head - count) modulo LEN
-    uint16_t oldest = (uint16_t)((w_head + WIND_LOG_STORE_LEN - w_count) % WIND_LOG_STORE_LEN);
+    uint16_t oldest = (uint16_t)((w_head + prefs.wind_log_store_len - w_count) % prefs.wind_log_store_len);
     return oldest;
 }
 
@@ -898,8 +919,8 @@ void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
     if(w_count == 0) first_timestamp = ts;
     last_timestamp = ts;
     
-    w_head = (uint16_t)((w_head + 1) % WIND_LOG_STORE_LEN);
-    if (w_count < WIND_LOG_STORE_LEN) {
+    w_head = (uint16_t)((w_head + 1) % prefs.wind_log_store_len);
+    if (w_count < prefs.wind_log_store_len) {
         w_count++;
     } else{
       first_timestamp += prefs.store_wind_data_interval; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
@@ -919,8 +940,7 @@ int windlog_copy(WindSample* out, uint16_t max_out) {
       uint16_t base = windlog_oldest_index();
 
       // The logical span may wrap; split into two memcpy if needed
-      uint16_t first_run = (uint16_t)((base + to_copy <= WIND_LOG_STORE_LEN) ? to_copy
-                                                                              : (WIND_LOG_STORE_LEN - base));
+      uint16_t first_run = (uint16_t)((base + to_copy <= prefs.wind_log_store_len) ? to_copy : (prefs.wind_log_store_len - base));
       memcpy(out, &wind_log[base], first_run * sizeof(WindSample));
 
       uint16_t remaining = (uint16_t)(to_copy - first_run);
@@ -1031,16 +1051,21 @@ String getWindData() {
 }
 
 
+bool isSleepHour(int start, int end, int hour) {
+  if (start > end) 
+    return start <= hour || hour < end;
+  else
+    return end > hour && hour >= start;
+}
+
 bool isDeepSleepTime() {
   if(!prefs.sleep_enabled) return false; // dont do anything if it is disabled 
+  if(!accurateTimeSet) return false; // the time was not set from the GMS module yet
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
 
   // we sleep at night ofcorse! from 8 PM to 6 AM
-  if(prefs.sleep_hour_start <= hour() && hour() <= 24) return true;
-  if(0 <= hour() && hour() < prefs.sleep_hour_end) return true;
-
-  return false;
+  return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour());
 }
 
 void evaluateIfDeepSleep() {
@@ -1059,7 +1084,9 @@ void evaluateIfDeepSleep() {
 FloatRunningAverage<32> vBattAvg(read_batt_v);
 FloatRunningAverage<8> vSolarAvg(read_solar_v);
 
+
 uint32_t lastSend = 0;
+uint32_t lastSuccessfulSend = 0;
 void loop() {
   button.loop();
   button2.loop();
@@ -1086,6 +1113,13 @@ void loop() {
     vSolarAvg.log();
   }
 
+  // check if the station was unable to send the data for longer then 1 hour 
+  if(millis() - lastSuccessfulSend > 1*60*60*1000) { 
+    Serial1.println("Unable to send the data for longer then 1 hour, force resetting.");
+    esp_restart();  // software reset
+  }
+
+
   lastNow = millis();
 
   //updateSerial();
@@ -1099,19 +1133,19 @@ void loop() {
 }
 
 float read_batt_v() {
-  return analogRead(V_BATT_PIN) * 0.0006598; 
+  return analogRead(V_BATT_PIN) *  prefs.vbat_calib; 
 }
 
 float read_solar_v() {
-  return analogRead(V_SOALR_PIN) * 0.003532;
+  return analogRead(V_SOALR_PIN) * prefs.vsolar_calib; 
 }
 
 void turnOnModule() {
   Serial1.println("turning on");
 
   for(int i=0; i<40;i++){
-    pinMode(GPRS_ON_PIN, OUTPUT); digitalWrite(GPRS_ON_PIN, LOW);
-    delayMicroseconds(50*i);
+    digitalWrite(GPRS_ON_PIN, LOW);
+    delayMicroseconds(50*i); digitalWrite(GPRS_ON_PIN, HIGH);
     pinMode(GPRS_ON_PIN, INPUT);
     delay(3);
   }
@@ -1120,7 +1154,7 @@ void turnOnModule() {
   delay(1000);
 
   Serial_println("Turning on GPRS module!");
-  digitalWrite(GPRS_POWER_PIN, LOW);
+  digitalWrite(GPRS_POWER_PIN, LOW);  // the power pin has to be pulle to low for 1 second in order to turn
   Serial_println("waiting 1s ...");
   delay(1000);
   digitalWrite(GPRS_POWER_PIN, HIGH);
@@ -1190,6 +1224,7 @@ void fullCycleSend() {
     if (r == SendResult::OK) {
       Serial_println("Send successful!");
       sendOk = true;
+      lastSuccessfulSend = millis(); 
     } else {
       logSendErrorForResult(r);
       elog.log(ErrorLogger::ERR_SEND_REPEAT);
@@ -1197,7 +1232,6 @@ void fullCycleSend() {
       Serial_println(sendResultToStr(r)); // human-readable reason
       error_notify_led = 1;
     }
-
 
     Serial_println("Finished sending!");
     Serial_print("Duration:"); Serial_print((millis()-httpGetStart)/1000); Serial_println("s");
@@ -1531,6 +1565,7 @@ bool parseCCLKResponse(const String& response) {
   Serial_println("Got new date!");
   // save the time inside the TimeLib library
   shiftTimestampsOnNewTime(hour, minute, second); 
+  accurateTimeSet = true;
   setTime(hour, minute, second, day, month, year);
 
   // Print the parsed time
@@ -1626,6 +1661,16 @@ bool saveNewPrefValue(String key, String value) {
   else if(key == "cgreg_timeout_s") {
     prefs.cgreg_timeout_s = value.toInt();
   }
+  else if(key == "vbat_calib") {
+    prefs.vbat_calib = value.toFloat();
+  }
+  else if(key == "vsolar_calib") {
+    prefs.vsolar_calib = value.toFloat();
+  }
+  else if(key == "wind_log_store_len") {
+    prefs.wind_log_store_len = value.toInt();
+  }
+
 
   else {
     Serial_print("Unable to find the prefs key: '"); Serial_print(key); Serial_println("'");
@@ -1683,7 +1728,7 @@ void parseReturnData(String& data) {
   bool newPrefsSet = false;
   int prefsPos = data.indexOf("prefs:");
   if (prefsPos < 0) {
-    Serial_println("No 'params' section found.");
+    Serial_println("No 'prefs:' section found.");
     shouldReset = false; 
     shouldSendPrefs = false;
     return;
@@ -1881,6 +1926,11 @@ String getPostBodyPrefs() {
 
   body += "as5600_pwr_on_time=" + String(prefs.as5600_pwr_on_time) + ";";
   body += "as5600_read_interval=" + String(prefs.as5600_read_interval) + ";";
+
+  body += "wind_log_store_len=" + String(prefs.wind_log_store_len) + ";";
+
+  body += "vbat_calib=" + String(prefs.vbat_calib) + ";";
+  body += "vsolar_calib=" + String(prefs.vsolar_calib) + ";";
 
   return body;
 }

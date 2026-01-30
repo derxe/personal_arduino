@@ -1,8 +1,19 @@
+#define UART_DEBUG_TX  16
+#define UART_DEBUG_RX  14 // unused pin 14
+
+#include <SerialMod0.h>
+SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
+#define SerialDBG SerialUart0
+
+#define Serial_print(x)    do { SerialDBG.print(x); /* Serial1.print(x);*/ } while (0)
+#define Serial_println(x)  do { SerialDBG.println(x); /* Serial1.println(x);*/ } while (0)
+#define Serial_write(x)  do { SerialDBG.write(x); /*Serial1.write(x);*/ } while (0)
+
+#include <Preferences.h>
 #include "esp_log.h" 
 #include <SoftwareSerial.h>
 #include "Button2.h"
 #include "esp_timer.h"
-#include <SerialMod0.h>
 #include "AS5600.h"
 #include <Wire.h>
 #include <TimeLib.h>
@@ -115,17 +126,8 @@ enum class SendResult : int {
 //#define PRINT_SIM_COMM 
 //#define PRINT_MAGNET_READ_DEBUG
 
-#define UART_DEBUG_TX  16
-#define UART_DEBUG_RX  14 // unused pin 14
-
-SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
-#define SerialDBG SerialUart0
 
 //#define SerialDBG Serial
-
-#define Serial_print(x)    do { SerialDBG.print(x); /* Serial1.print(x);*/ } while (0)
-#define Serial_println(x)  do { SerialDBG.println(x); /* Serial1.println(x);*/ } while (0)
-#define Serial_write(x)  do { SerialDBG.write(x); /*Serial1.write(x);*/ } while (0)
 
 #define RX_PIN 37
 #define TX_PIN 39
@@ -808,8 +810,8 @@ bool checkAS5600Connected() {
 
   bool something_connected = sda_high || scl_high;
 
-  if(!sda_high) elog.log(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
-  if(!scl_high) elog.log(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
+  if(!sda_high) elog.logTmp(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
+  if(!scl_high) elog.logTmp(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
   //Serial_print("sda:"); Serial_print(sda_high);
   //Serial_print(" scl:"); Serial_println(scl_high);
 
@@ -837,7 +839,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
 
     if(!checkAS5600Connected()) {
       Serial_println("Dir sensor not conn");
-      elog.log(ErrorLogger::ERR_DIR_NOT_CONNECTED);
+      elog.logTmp(ErrorLogger::ERR_DIR_NOT_CONNECTED);
       directionReadCount = 3; // skip the next step where the magnet is actually read
       digitalWrite(AS600_POWER_PIN, LOW); // the sensor is not connected so turn it off again
       error_notify_led = 1;
@@ -880,7 +882,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
         // save the measurement inside the log
         directions_log[directions_log_i++] = angle;
       } else {
-        elog.log(ErrorLogger::ERR_DIR_SHORT_BUF_FULL);
+        elog.logTmp(ErrorLogger::ERR_DIR_SHORT_BUF_FULL);
       }
       portEXIT_CRITICAL_ISR(&timerMux);
 
@@ -890,7 +892,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
       Serial_println(as5600_error);
       error_notify_led = 1;
       }
-      elog.log(ErrorLogger::ERR_DIR_READ);
+      elog.logTmp(ErrorLogger::ERR_DIR_READ);
     }
     
     digitalWrite(AS600_POWER_PIN, LOW);
@@ -952,7 +954,7 @@ void IRAM_ATTR onReadSpeed(void* arg) {
   if (speeds_log_i < SPEEDS_LOG_LEN){
     speeds_log[speeds_log_i++] = int(speed * 10);
   } else {
-    elog.log(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
+    elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
   }
 
   portEXIT_CRITICAL_ISR(&timerMux);
@@ -1008,7 +1010,7 @@ void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
     } else{
       first_timestamp += prefs.store_wind_data_interval; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
       // buffer full -> oldest is implicitly dropped
-      elog.log(ErrorLogger::ERR_WIND_BUF_OVERWRITE);
+      elog.logTmp(ErrorLogger::ERR_WIND_BUF_OVERWRITE);
     }
 }
 
@@ -1291,7 +1293,6 @@ void fullCycleSend() {
   if (temp_out == NAN) {
     elog.log(ErrorLogger::ERR_TEMP_READ);
   }
-
 
   for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
     Serial_print("Sending try n:"); Serial_println(nTry);
@@ -1845,6 +1846,8 @@ void parseReturnData(String& data) {
     key.trim();
     value.trim();
 
+    Serial_print(" - pref key:"); Serial_println(key); 
+
     if(key == "no_reset") shouldReset = false; 
     else if(key == "no_send_prefs") shouldSendPrefs = false; 
     else if(key == "set_phone_num") setPhoneNumber(value);
@@ -2025,7 +2028,7 @@ String getPostErrorsList() {
 
   body += "ERR_NONE:0,";
 
-  // Communication / modem
+  // ---- SEND / GSM / HTTP ----
   body += "ERR_SEND_AT_FAIL:1,";
   body += "ERR_SEND_NO_SIM:2,";
   body += "ERR_SEND_CSQ_FAIL:3,";
@@ -2034,11 +2037,15 @@ String getPostErrorsList() {
   body += "ERR_SEND_CIMI_FAIL:6,";
   body += "ERR_SEND_GPRS_FAIL:7,";
   body += "ERR_SEND_HTTP_FAIL_DATA:8,";
-  body += "ERR_SEND_HTTP_FAIL_PREFS:9,";
   body += "ERR_SEND_UNKWN_FAIL:10,";
   body += "ERR_SEND_REPEAT:11,";
+  body += "ERR_SEND_FAIL_WRONG_RESPONSE:12,";
+  body += "ERR_SEND_PREFS_HTTP_FAIL:13,";
+  body += "ERR_SEND_PREFS_HTTP_FAIL_RESPONSE:14,";
+  body += "ERR_SEND_ERRORS_HTTP_FAIL:15,";
+  body += "ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE:16,";
 
-  // Direction / I2C
+  // ---- DIR / I2C ----
   body += "ERR_DIR_READ:20,";
   body += "ERR_DIR_READ_ONCE:21,";
   body += "ERR_DIR_NOT_CONNECTED:22,";
@@ -2046,29 +2053,22 @@ String getPostErrorsList() {
   body += "ERR_DIR_SDA_NOT_CONN:24,";
   body += "ERR_DIR_SCL_NOT_CONN:25,";
 
-  // Wind / speed buffers
+  // ---- WIND ----
   body += "ERR_WIND_BUF_OVERWRITE:30,";
   body += "ERR_WIND_SHORT_BUF_FULL:31,";
-  body += "ERR_SPEED_SHORT_BUF_FULL:32,";
 
-  // Temperature
+  // ---- TEMP ----
   body += "ERR_TEMP_READ:40,";
 
-  // Power and reset related
-  body += "ERR_POWERON_RESET:51,";
+  // ---- POWER / RESET ----
   body += "ERR_BROWNOUT_RESET:52,";
   body += "ERR_PANIC_RESET:53,";
   body += "ERR_WDT_RESET:54,";
-  body += "ERR_SDIO_RESET:55,";
-  body += "ERR_USB_RESET:56,";
-  body += "ERR_JTAG_RESET:57,";
-  body += "ERR_EFUSE_RESET:58,";
-  body += "ERR_PWR_GLITCH_RESET:59,";
-  body += "ERR_CPU_LOCKUP_RESET:60,";
   body += "ERR_UNEXPECTED_RESET:61;";
 
   return body;
 }
+
 
 
 String waitForHttpActionResponse(unsigned long timeoutMs) {
@@ -2192,27 +2192,55 @@ SendResult runHttpGetHot(int nTry) {
   if (!sendPOST(prefs.url_data + imsiNum, getPostBody())) return SendResult::HTTP_FAIL;
   
   waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+
+  if(postReturnData.indexOf("saved:") < 0) {
+    // expected "saved:" in the response if it is not there the response from the server was incorrect
+    elog.log(ErrorLogger::ERR_SEND_FAIL_WRONG_RESPONSE);
+    return SendResult::HTTP_FAIL;
+  }
+
   if(!postReturnData.isEmpty()) {
     parseReturnData(postReturnData);
   }
   
+  elog.clearAll(); // clear all the errors so they are not send again
+  windlog_clear();
+
   if(shouldSendPrefs) {
+    Serial_println();
+    Serial_println("Sending preferences");
     bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefs());
     if (!postSuccess) {
       Serial_print("Sending preferences failed!");
-      elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_PREFS);
+      elog.log(ErrorLogger::ERR_SEND_PREFS_HTTP_FAIL);
     } else {
       waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+
+      if (postReturnData.indexOf("saved:") < 0) {
+        Serial_println("Sending preferences failed wrong response!");
+        elog.log(ErrorLogger::ERR_SEND_PREFS_HTTP_FAIL_RESPONSE);
+      } else {
+        Serial_println("Sending prefs OK!");
+      }
     }
   }
 
   if(shouldSendErrorNames) {
+    Serial_println();
+    Serial_println("Sending error names");
     bool postSuccess = sendPOST(prefs.url_errors + imsiNum, getPostErrorsList());
     if (!postSuccess) {
-      Serial_print("Sending errors failed!");
-      elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_PREFS);
+      Serial_println("Sending errors failed!");
+      elog.log(ErrorLogger::ERR_SEND_ERRORS_HTTP_FAIL);
     } else {
       waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+
+      if (postReturnData.indexOf("saved:") < 0) {
+        Serial_println("Sending errors failed wrong response!");
+        elog.log(ErrorLogger::ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE);
+      } else {
+        Serial_println("Sending errors OK!");
+      }
     }
   }
 
@@ -2228,9 +2256,7 @@ SendResult runHttpGetHot(int nTry) {
   sendCommand("AT+SAPBR=0,1");
 
   Serial_print("Success!");
-
-  elog.clearAll(); // clear all the errors so they are not send again
-  windlog_clear();
+  
   /*
   portENTER_CRITICAL(&timerMux);
   Serial_print("We need to move: ");

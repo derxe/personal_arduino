@@ -3,80 +3,102 @@ public:
 
     // --- Enum of all possible errors ---
     enum ErrorCode {
-        ERR_NONE = 0,               // 0  no error
+        ERR_NONE = 0,               // no error
 
-        ERR_SEND_AT_FAIL         = 1, 
-        ERR_SEND_NO_SIM          = 2, 
-        ERR_SEND_CSQ_FAIL        = 3, 
-        ERR_SEND_REG_FAIL        = 4, 
-        ERR_SEND_CCLK_FAIL       = 5,
-        ERR_SEND_CIMI_FAIL       = 6, 
-        ERR_SEND_GPRS_FAIL       = 7, 
-        ERR_SEND_HTTP_FAIL_DATA  = 8,  
-        ERR_SEND_HTTP_FAIL_PREFS = 9,
-        ERR_SEND_UNKWN_FAIL      = 10,
-        ERR_SEND_REPEAT          = 11, 
+        // ---- SEND / GSM / HTTP ----
+        ERR_SEND_AT_FAIL                 = 1,
+        ERR_SEND_NO_SIM                  = 2,
+        ERR_SEND_CSQ_FAIL                = 3,
+        ERR_SEND_REG_FAIL                = 4,
+        ERR_SEND_CCLK_FAIL               = 5,
+        ERR_SEND_CIMI_FAIL               = 6,
+        ERR_SEND_GPRS_FAIL               = 7,
+        ERR_SEND_HTTP_FAIL_DATA          = 8,
+        ERR_SEND_UNKWN_FAIL              = 10,
+        ERR_SEND_REPEAT                  = 11,
+        ERR_SEND_FAIL_WRONG_RESPONSE     = 12,
+        ERR_SEND_PREFS_HTTP_FAIL         = 13,
+        ERR_SEND_PREFS_HTTP_FAIL_RESPONSE= 14,
+        ERR_SEND_ERRORS_HTTP_FAIL        = 15,
+        ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE = 16,
 
+        // ---- DIR / I2C ----
         ERR_DIR_READ             = 20,
         ERR_DIR_READ_ONCE        = 21,
         ERR_DIR_NOT_CONNECTED    = 22,
-        ERR_DIR_SHORT_BUF_FULL   = 23, 
+        ERR_DIR_SHORT_BUF_FULL   = 23,
         ERR_DIR_SDA_NOT_CONN     = 24,
         ERR_DIR_SCL_NOT_CONN     = 25,
 
+        // ---- WIND ----
         ERR_WIND_BUF_OVERWRITE   = 30,
-        ERR_WIND_SHORT_BUF_FULL  = 31, 
-        ERR_SPEED_SHORT_BUF_FULL = 32, 
+        ERR_WIND_SHORT_BUF_FULL  = 31,
 
-        ERR_TEMP_READ            = 40, 
+        // ---- TEMP ----
+        ERR_TEMP_READ            = 40,
 
-        // Power and reset related errors
-        ERR_POWERON_RESET       = 51, // normal power-on reset (info)
-        ERR_BROWNOUT_RESET      = 52, // brown-out or low-voltage reset
-        ERR_PANIC_RESET         = 53, // software panic or abort
-        ERR_WDT_RESET           = 54, // watchdog reset (task/int/other)
-        ERR_SDIO_RESET          = 55, // reset triggered over SDIO
-        ERR_USB_RESET           = 56, // reset by USB peripheral
-        ERR_JTAG_RESET          = 57, // reset by JTAG
-        ERR_EFUSE_RESET         = 58, // reset due to efuse error
-        ERR_PWR_GLITCH_RESET    = 59, // reset due to power glitch detection
-        ERR_CPU_LOCKUP_RESET    = 60, // reset due to CPU lockup (double exception)
-        ERR_UNEXPECTED_RESET    = 61, // reset reason unexpected / unclassified
+        // ---- POWER / RESET ----
+        ERR_BROWNOUT_RESET       = 52,
+        ERR_PANIC_RESET          = 53,
+        ERR_WDT_RESET            = 54,
+        ERR_UNEXPECTED_RESET     = 61,
 
-        ERR_COUNT_MAX           = 100 // 100 (not an error, count only)
+        ERR_COUNT_MAX            = 100
     };
 
-
-    // Constructor: Initializes the error array to zero.
     ErrorLogger() {
-        // Explicitly initialize the array to all zeros
+
+    }
+
+    void init() {
+        _prefs.begin("errlog2", false);
         for (int i = 0; i < ERR_COUNT_MAX; ++i) {
-            _errorCounts[i] = 0;
+            _errorCounts[i] = _prefs.getUShort(String(i).c_str(), 0);
         }
     }
 
-    // NOTE: begin() and end() are no longer necessary without Preferences.
+    ~ErrorLogger() {
+        _prefs.end();
+    }
 
-    // --- Log (increment) an error count ---
+    // --- Log (increment) an error count and store in Preferences ---
     void log(ErrorCode code) {
         if (code >= 0 && code < ERR_COUNT_MAX) {
             _errorCounts[code]++;
+            int n_written = _prefs.putUShort(String(code).c_str(), _errorCounts[code]);
+            
+            // debug prints:
+            //Serial_print("Log error: "); Serial_println(code);
+            //Serial_print("n bytes written: "); Serial_println(n_written);
+            //uint16_t test = _prefs.getUShort(String(code).c_str(), 12345);
+            //Serial_print("count: "); Serial_println(test);
+            //Serial_print("err count: "); Serial_println(_errorCounts[code]);
+        }
+    }
+
+    void logTmp(ErrorCode code) {
+        if (code >= 0 && code < ERR_COUNT_MAX) {
+            _errorCountsTemp[code]++;
+            Serial_print("Log error tmp: "); Serial_println(code);
         }
     }
 
     // --- Get number of times an error occurred ---
     int32_t get(ErrorCode code) {
         if (code >= 0 && code < ERR_COUNT_MAX) {
-            return _errorCounts[code];
+            int count = _prefs.getUShort(String(code).c_str(), 0);
+            count += _errorCountsTemp[code];
+            return count;
         }
-        return -1; // Return 0 for an invalid code
+        return -1;
     }
 
-    // --- Print or return all stored error counts ---
-    String getAll(bool printToSerial = false) {
+    // --- return all stored error counts used for debug prints ---
+    String getAll() {
         String out;
         for (int code = ERR_NONE; code < ERR_COUNT_MAX; ++code) {
-            uint32_t count = _errorCounts[code];
+            int count = get((ErrorCode) code);
+
             if (count > 0) {
                 String msg = String(code) + ": " +
                              errorToString((ErrorCode)code) +
@@ -87,11 +109,14 @@ public:
         return out;
     }
 
-    String getAllForSend(bool printToSerial = false) {
+    // --- return all stored error counts used for sending to server ---
+    String getAllForSend() {
         String out;
         bool first = true;
         for (int code = 1; code < ERR_COUNT_MAX; ++code) {
-            uint32_t count = _errorCounts[code];
+            int count = get((ErrorCode)code);
+
+
             if (count > 0) {
                 if(!first) out += ",";
                 first = false;
@@ -102,75 +127,104 @@ public:
         return out;
     }
 
-    // --- Clear a specific error counter ---
+    // --- Clear a specific error counter (and in Preferences) ---
     void clear(ErrorCode code) {
         if (code >= 0 && code < ERR_COUNT_MAX) {
+            if(_errorCounts[code] != 0) _prefs.putUShort(String(code).c_str(), 0);
+            
+            _errorCountsTemp[code] = 0;
             _errorCounts[code] = 0;
         }
     }
 
-    // --- Clear all error counters ---
+    // --- Clear all error counters (and in Preferences) ---
     void clearAll() {
-        // Simply call the constructor's initialization logic
         for (int i = 0; i < ERR_COUNT_MAX; ++i) {
-            _errorCounts[i] = 0;
+            clear((ErrorCode)i);
         }
     }
 
     static const char* errorToString(ErrorCode code) {
         switch (code) {
-            case ERR_NONE:                 return "No error";
+            case ERR_NONE:
+                return "No error";
 
-            // Communication / modem
-            case ERR_SEND_AT_FAIL:         return "AT command failure";
-            case ERR_SEND_NO_SIM:          return "No SIM card detected";
-            case ERR_SEND_CSQ_FAIL:        return "Signal quality (CSQ) check failed";
-            case ERR_SEND_REG_FAIL:        return "Network registration failed";
-            case ERR_SEND_CCLK_FAIL:       return "Network time (CCLK) retrieval failed";
-            case ERR_SEND_CIMI_FAIL:       return "IMSI (CIMI) retrieval failed";
-            case ERR_SEND_GPRS_FAIL:       return "GPRS/Data connection failed";
-            case ERR_SEND_HTTP_FAIL_DATA:  return "HTTP data send failed";
-            case ERR_SEND_HTTP_FAIL_PREFS: return "HTTP prefs send failed";
-            case ERR_SEND_UNKWN_FAIL:      return "Unknown send failure";
-            case ERR_SEND_REPEAT:          return "Send had to be repeated";
+            // ---- SEND / GSM / HTTP ----
+            case ERR_SEND_AT_FAIL:
+                return "AT command failure";
+            case ERR_SEND_NO_SIM:
+                return "No SIM card detected";
+            case ERR_SEND_CSQ_FAIL:
+                return "Signal quality (CSQ) check failed";
+            case ERR_SEND_REG_FAIL:
+                return "Network registration failed";
+            case ERR_SEND_CCLK_FAIL:
+                return "Network time (CCLK) retrieval failed";
+            case ERR_SEND_CIMI_FAIL:
+                return "IMSI (CIMI) retrieval failed";
+            case ERR_SEND_GPRS_FAIL:
+                return "GPRS / data connection failed";
+            case ERR_SEND_HTTP_FAIL_DATA:
+                return "HTTP data send failed";
+            case ERR_SEND_UNKWN_FAIL:
+                return "Unknown send failure";
+            case ERR_SEND_REPEAT:
+                return "Send had to be repeated";
+            case ERR_SEND_FAIL_WRONG_RESPONSE:
+                return "Send failed due to wrong response";
 
-            // Direction / I2C / buffers
-            case ERR_DIR_READ:             return "Direction read error";
-            case ERR_DIR_READ_ONCE:        return "Direction read error (single occurrence)";
-            case ERR_DIR_NOT_CONNECTED:    return "Direction sensor not connected";
-            case ERR_DIR_SHORT_BUF_FULL:   return "Direction short buffer full";
-            case ERR_DIR_SDA_NOT_CONN:     return "Direction sensor SDA not connected";
-            case ERR_DIR_SCL_NOT_CONN:     return "Direction sensor SCL not connected";
+            case ERR_SEND_PREFS_HTTP_FAIL:
+                return "HTTP prefs send failed";
+            case ERR_SEND_PREFS_HTTP_FAIL_RESPONSE:
+                return "HTTP prefs response invalid";
+            case ERR_SEND_ERRORS_HTTP_FAIL:
+                return "HTTP error-log send failed";
+            case ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE:
+                return "HTTP error-log response invalid";
 
-            // Wind / speed buffers
-            case ERR_WIND_BUF_OVERWRITE:   return "Wind buffer overwrite";
-            case ERR_WIND_SHORT_BUF_FULL:  return "Wind short buffer full";
-            case ERR_SPEED_SHORT_BUF_FULL: return "Speed short buffer full";
+            // ---- DIR / I2C ----
+            case ERR_DIR_READ:
+                return "Direction read error";
+            case ERR_DIR_READ_ONCE:
+                return "Direction read error (single occurrence)";
+            case ERR_DIR_NOT_CONNECTED:
+                return "Direction sensor not connected";
+            case ERR_DIR_SHORT_BUF_FULL:
+                return "Direction short buffer full";
+            case ERR_DIR_SDA_NOT_CONN:
+                return "Direction sensor SDA not connected";
+            case ERR_DIR_SCL_NOT_CONN:
+                return "Direction sensor SCL not connected";
 
-            // Temperature
-            case ERR_TEMP_READ:            return "Temperature read error";
+            // ---- WIND ----
+            case ERR_WIND_BUF_OVERWRITE:
+                return "Wind buffer overwrite";
+            case ERR_WIND_SHORT_BUF_FULL:
+                return "Wind short buffer full";
 
-            // Power and reset related
-            case ERR_POWERON_RESET:        return "Power-on reset (info)";
-            case ERR_BROWNOUT_RESET:       return "Brown-out / low-voltage reset";
-            case ERR_PANIC_RESET:          return "Software panic / abort reset";
-            case ERR_WDT_RESET:            return "Watchdog Timer reset";
-            case ERR_SDIO_RESET:           return "SDIO-triggered reset";
-            case ERR_USB_RESET:            return "USB-triggered reset";
-            case ERR_JTAG_RESET:           return "JTAG-triggered reset";
-            case ERR_EFUSE_RESET:          return "EFUSE error reset";
-            case ERR_PWR_GLITCH_RESET:     return "Power glitch reset";
-            case ERR_CPU_LOCKUP_RESET:     return "CPU lockup / double exception reset";
-            case ERR_UNEXPECTED_RESET:     return "Unexpected / unclassified reset";
+            // ---- TEMP ----
+            case ERR_TEMP_READ:
+                return "Temperature read error";
 
-            default:                      return "Unknown ErrorCode";
+            // ---- POWER / RESET ----
+            case ERR_BROWNOUT_RESET:
+                return "Brown-out / low-voltage reset";
+            case ERR_PANIC_RESET:
+                return "Software panic / abort reset";
+            case ERR_WDT_RESET:
+                return "Watchdog reset";
+            case ERR_UNEXPECTED_RESET:
+                return "Unexpected / unclassified reset";
+
+            default:
+                return "Unknown ErrorCode";
         }
     }
 
 
 private:
-    // New class member: Static array to hold the counts.
-    // The size is determined by the final element in the enum.
-    static constexpr int ERROR_COUNT = ERR_COUNT_MAX; // Alternatively, use ERR_COUNT_MAX
+    static constexpr int ERROR_COUNT = ERR_COUNT_MAX;
     uint16_t _errorCounts[ERROR_COUNT];
+    uint16_t _errorCountsTemp[ERROR_COUNT];
+    Preferences _prefs;
 };

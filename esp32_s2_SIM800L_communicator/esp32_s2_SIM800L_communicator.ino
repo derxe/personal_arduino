@@ -59,13 +59,13 @@ struct AppPrefs {
   float  vsolar_calib;           // calibration for converting the measured voltage on vsolar to the actual voltage
 };
 
-#define SCHEMA_VERSION  20
+#define SCHEMA_VERSION  22
 
 // define default preferences:
 AppPrefs prefs = {
   /*pref_version*/              12,
   /*pref_set_date*/             0, 
-  /*version*/                   "v5",
+  /*version*/                   "v6",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_errors/",
@@ -91,7 +91,7 @@ AppPrefs prefs = {
   /*blink_led_on_time*/         20,
   /*blink_led_interval*/        20,  
 
-  /*as5600_pwr_on_time*/        30,
+  /*as5600_pwr_on_time*/        100,
   /*as5600_read_interval*/      30,
 
   /*wind_log_store_len*/        600,
@@ -107,9 +107,10 @@ enum class SendResult : int {
   NO_SIM               = -2,   // CSMINS? => no SIM
   CSQ_FAIL             = -3,   // CSQ failed
   REG_FAIL             = -4,   // CREG? or CGREG? failed (both map here)
-  CIMI_FAIL            = -5,   // CIMI failed
-  GPRS_SETUP_FAIL      = -6,   // any SAPBR step failed
-  HTTP_FAIL            = -7,   // sendPOSTData / HTTPREAD failed
+  CCLK_FAIL            = -5,   // failed getting time
+  CIMI_FAIL            = -6,   // CIMI failed
+  GPRS_SETUP_FAIL      = -7,   // any SAPBR step failed
+  HTTP_FAIL            = -8,   // sendPOSTData / HTTPREAD failed
 };
 
 //#define PRINT_SIM_COMM 
@@ -204,15 +205,15 @@ Single battery powered
 
 */
 // Define a custom TwoWire instance
-#define SDA_GPIO             5
-#define SCL_GPIO             7      
-#define AS600_POWER_PIN      4
+#define AS5600_SDA_PIN             5
+#define AS5600_SCL_PIN             7      
+#define AS600_POWER_PIN            4
 AS5600 as5600; 
 
 // this temerature sensor is inside
 #define AHT20_1_PWR_PIN   17
-#define AHT20_1_SDA_PIN   34
-#define AHT20_1_SCL_PIN   21
+#define AHT20_1_SDA_PIN   21
+#define AHT20_1_SCL_PIN   34
 AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN);
 
 #define AHT20_2_PWR_PIN   40
@@ -439,6 +440,43 @@ void printPreferences() {
   Serial_println("---------------------");
 }
 
+bool checkHalSpinSensorConnected() {
+  // We cant test that since there is no way to control the power of the hal sensor
+  // TODO check if the PIN is connected by giving a power to the sensor and then checking how the hal pin responds 
+  return true;
+}
+
+void checkSensorsConnected() {
+  if(!checkAS5600Connected()) {
+    Serial_println("AS5600 not connected!");
+    digitalWrite(DIR_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, HIGH);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, HIGH);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, HIGH);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(DIR_LED_PIN, HIGH);
+  }
+
+  if(!checkHalSpinSensorConnected()) {
+    Serial_print("Hal Spin sensor not connected!");
+    digitalWrite(SPIN_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(SPIN_LED_PIN, HIGH);
+    delay(400);
+    digitalWrite(SPIN_LED_PIN, LOW);
+    delay(400);
+    digitalWrite(SPIN_LED_PIN, HIGH);
+  }
+}
 
 String version = "2.1";
 bool accurateTimeSet = false;
@@ -469,8 +507,8 @@ void setup() {
     case ESP_RST_INT_WDT:
     case ESP_RST_TASK_WDT:
     case ESP_RST_WDT:            elog.log(ErrorLogger::ERR_WDT_RESET); break;
-    case ESP_RST_DEEPSLEEP:
-    case ESP_RST_POWERON:
+    case ESP_RST_DEEPSLEEP:      
+    case ESP_RST_POWERON:        
     case ESP_RST_SW:             /* considered expected here */ break;
     default:                     elog.log(ErrorLogger::ERR_UNEXPECTED_RESET); break;
   }
@@ -498,9 +536,8 @@ void setup() {
   pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);    // off
   pinMode(DIR_LED_PIN, OUTPUT);    digitalWrite(DIR_LED_PIN, LOW);          // off
   pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);         // off
-  pinMode(AHT20_1_PWR_PIN, OUTPUT);  digitalWrite(AHT20_1_PWR_PIN, HIGH);
-  pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, HIGH);
-
+  pinMode(AHT20_1_PWR_PIN, OUTPUT);  digitalWrite(AHT20_1_PWR_PIN, LOW);
+  pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, LOW);
   // Power ON AHT20
   //pinMode(TIMER_PIN, OUTPUT); digitalWrite(TIMER_PIN, LOW);
   //pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
@@ -518,9 +555,11 @@ void setup() {
   button2.begin(BUTTON_PIN_2);
   button2.setPressedHandler(tap2);
 
+  checkSensorsConnected();
+
   // init the as5600 chip so we can read wind direction 
-  Wire.begin(SDA_GPIO, SCL_GPIO); // 1 Mhz
-  Wire.setClock(1000000UL);
+  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN); 
+  Wire.setClock(1000000UL); // 1 Mhz
 
   aht1.SDA_LOW();  // Put everything to low
   aht1.SCL_LOW();
@@ -624,7 +663,7 @@ void setup() {
 }
 
 bool readSensorTempHum_inside(float &tempC, float &humRH) {
-  //digitalWrite(AHT20_1_PWR_PIN, HIGH);
+  digitalWrite(AHT20_1_PWR_PIN, HIGH);
 
   // Put bus in idle state
   aht1.SDA_HIGH();
@@ -632,7 +671,7 @@ bool readSensorTempHum_inside(float &tempC, float &humRH) {
   delay(200);
 
   if (!aht1.aht20_init()) {
-    //digitalWrite(AHT20_1_PWR_PIN, LOW);
+    digitalWrite(AHT20_1_PWR_PIN, LOW);
     aht1.SDA_LOW();   // put everything to low
     aht1.SCL_LOW();
     return false;
@@ -641,7 +680,7 @@ bool readSensorTempHum_inside(float &tempC, float &humRH) {
   bool success = aht1.aht20_read(tempC, humRH);
   success = aht1.aht20_read(tempC, humRH); // read twice to be safe
 
-  //digitalWrite(AHT20_1_PWR_PIN, LOW);
+  digitalWrite(AHT20_1_PWR_PIN, LOW);
 
   aht1.SDA_LOW();
   aht1.SCL_LOW();
@@ -649,15 +688,15 @@ bool readSensorTempHum_inside(float &tempC, float &humRH) {
 }
 
 bool readSensorTempHum_outside(float &tempC, float &humRH) {
-  //digitalWrite(AHT20_2_PWR_PIN, HIGH);
+  digitalWrite(AHT20_2_PWR_PIN, HIGH);
 
   // Put bus in idle state
   aht2.SDA_HIGH();
   aht2.SCL_HIGH();
   delay(200);
 
-  if (!aht1.aht20_init()) {
-    //digitalWrite(AHT20_2_PWR_PIN, LOW);
+  if (!aht2.aht20_init()) {
+    digitalWrite(AHT20_2_PWR_PIN, LOW);
     aht2.SDA_LOW();   // put everything to low
     aht2.SCL_LOW();
     return false;
@@ -666,7 +705,7 @@ bool readSensorTempHum_outside(float &tempC, float &humRH) {
   bool success = aht2.aht20_read(tempC, humRH);
   success = aht2.aht20_read(tempC, humRH); // read twice to be safe
 
-  //digitalWrite(AHT20_2_PWR_PIN, LOW);
+  digitalWrite(AHT20_2_PWR_PIN, LOW);
 
   aht2.SDA_LOW();
   aht2.SCL_LOW();
@@ -682,6 +721,7 @@ uint32_t get_log_timestamp() {
   return get_log_timestamp(hour(), minute(), second());
 }
 
+#define PRINT_MAGNET_READ_DEBUG
 
 #ifdef PRINT_MAGNET_READ_DEBUG
   #define DBG_MNG(...) do { __VA_ARGS__; } while (0)
@@ -741,11 +781,41 @@ int directions_log[DIRECTIONS_LOG_LEN];
 volatile int directions_log_i = 0;
 
 
-#define AS5600_PWR_ON_TIME   30 
-#define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
-#define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
+//#define AS5600_PWR_ON_TIME   60 
+//#define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
+//#define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
 
+bool checkAS5600Connected() {
+  Wire.end();
 
+  // when we give power to the sensor the we 
+  // can measure the pulldownd on the sensor board to see if it is connected at all 
+
+  digitalWrite(AS600_POWER_PIN, HIGH); 
+  pinMode(AS5600_SCL_PIN, INPUT_PULLDOWN);
+  pinMode(AS5600_SDA_PIN, INPUT_PULLDOWN);
+  delayMicroseconds(20); // wait to settle
+
+  int sda_read = analogRead(AS5600_SDA_PIN);
+  int scl_read = analogRead(AS5600_SCL_PIN);
+  bool sda_high = sda_read > 1000;
+  bool scl_high = scl_read > 1000;
+
+  bool something_connected = sda_high || scl_high;
+
+  if(!sda_high) elog.log(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
+  if(!scl_high) elog.log(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
+  //Serial_print("sda:"); Serial_print(sda_high);
+  //Serial_print(" scl:"); Serial_println(scl_high);
+
+  // restore I2C
+  pinMode(AS5600_SDA_PIN, INPUT);
+  pinMode(AS5600_SCL_PIN, INPUT);
+  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN);
+  Wire.setClock(1000000UL);
+
+  return something_connected;
+}
 
 void IRAM_ATTR onReadDirection(void* arg) {
   static int directionReadCount = 0; 
@@ -760,7 +830,13 @@ void IRAM_ATTR onReadDirection(void* arg) {
   if(directionReadCount == 1) {
     digitalWrite(AS600_POWER_PIN, HIGH);
 
-    if(digitalRead(AS5600_SCL))
+    if(!checkAS5600Connected()) {
+      Serial_println("Dir sensor not conn");
+      elog.log(ErrorLogger::ERR_DIR_NOT_CONNECTED);
+      directionReadCount = 3; // skip the next step where the magnet is actually read
+      digitalWrite(AS600_POWER_PIN, LOW); // the sensor is not connected so turn it off again
+      error_notify_led = 1;
+    }
   }
 
   else if(directionReadCount == 2) {
@@ -781,12 +857,14 @@ void IRAM_ATTR onReadDirection(void* arg) {
       //if(as5600_error != 0) elog.log(ErrorLogger::ERR_DIR_READ_ONCE);
       //DBG_MNG( Serial_print("Read angle: "); Serial_print(angle); Serial_print(" "); Serial_println(as5600_error); );
     } while(as5600_error != 0 && --readRepeats > 0);
-
+  
     
     if(as5600_error == 0) {
       // successful angle read
       last_direction_read = angle;
-      DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
+      if(millis() < 1000*20) {// only log for first 20 s
+        DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
+      }
 
       // what should be considered "facing north", how much can the angle diviate from north
       #define BLINK_MARGIN  20
@@ -804,8 +882,8 @@ void IRAM_ATTR onReadDirection(void* arg) {
     } else {
       last_direction_read = as5600_error; // no angle was succesfully read due to an error
       Serial_print("Read angle error: "); {
-        Serial_println(as5600_error);
-        error_notify_led = 1;
+      Serial_println(as5600_error);
+      error_notify_led = 1;
       }
       elog.log(ErrorLogger::ERR_DIR_READ);
     }
@@ -1210,8 +1288,8 @@ void fullCycleSend() {
   }
 
 
-  for(int i=0; i<nSendRetrys && !sendOk; i++) {
-    Serial_print("Sending try n:"); Serial_println(i);
+  for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
+    Serial_print("Sending try n:"); Serial_println(nTry);
     
     signalStrength = -1;
     simDuration = -1;
@@ -1220,7 +1298,7 @@ void fullCycleSend() {
     turnOnModule();
       
     httpGetStart = millis();
-    SendResult r = runHttpGetHot();
+    SendResult r = runHttpGetHot(nTry);
     if (r == SendResult::OK) {
       Serial_println("Send successful!");
       sendOk = true;
@@ -1937,39 +2015,53 @@ String getPostBodyPrefs() {
 
 String getPostErrorsList() {
   String body;
-  body.reserve(512); 
+  body.reserve(768);
   body += "errors=";
+
   body += "ERR_NONE:0,";
 
+  // Communication / modem
   body += "ERR_SEND_AT_FAIL:1,";
   body += "ERR_SEND_NO_SIM:2,";
   body += "ERR_SEND_CSQ_FAIL:3,";
   body += "ERR_SEND_REG_FAIL:4,";
-  body += "ERR_SEND_CIMI_FAIL:5,";
-  body += "ERR_SEND_GPRS_FAIL:6,";
-  body += "ERR_SEND_HTTP_FAIL_DATA:7,";
-  body += "ERR_SEND_HTTP_FAIL_PREFS:8,";
-  body += "ERR_SEND_REPEAT:9,";
+  body += "ERR_SEND_CCLK_FAIL:5,";
+  body += "ERR_SEND_CIMI_FAIL:6,";
+  body += "ERR_SEND_GPRS_FAIL:7,";
+  body += "ERR_SEND_HTTP_FAIL_DATA:8,";
+  body += "ERR_SEND_HTTP_FAIL_PREFS:9,";
+  body += "ERR_SEND_UNKWN_FAIL:10,";
+  body += "ERR_SEND_REPEAT:11,";
 
+  // Direction / I2C
   body += "ERR_DIR_READ:20,";
   body += "ERR_DIR_READ_ONCE:21,";
-  body += "ERR_WIND_BUF_OVERWRITE:22,";
-  body += "ERR_WIND_SHORT_BUF_FULL:23,";
-  body += "ERR_SPEED_SHORT_BUF_FULL:24,";
-  body += "ERR_DIR_SHORT_BUF_FULL:25,";
-  body += "ERR_TEMP_READ:26,";
+  body += "ERR_DIR_NOT_CONNECTED:22,";
+  body += "ERR_DIR_SHORT_BUF_FULL:23,";
+  body += "ERR_DIR_SDA_NOT_CONN:24,";
+  body += "ERR_DIR_SCL_NOT_CONN:25,";
 
-  body += "ERR_POWERON_RESET:31,";
-  body += "ERR_BROWNOUT_RESET:32,";
-  body += "ERR_PANIC_RESET:33,";
-  body += "ERR_WDT_RESET:34,";
-  body += "ERR_SDIO_RESET:35,";
-  body += "ERR_USB_RESET:36,";
-  body += "ERR_JTAG_RESET:37,";
-  body += "ERR_EFUSE_RESET:38,";
-  body += "ERR_PWR_GLITCH_RESET:39,";
-  body += "ERR_CPU_LOCKUP_RESET:40,";
-  body += "ERR_UNEXPECTED_RESET:41;";
+  // Wind / speed buffers
+  body += "ERR_WIND_BUF_OVERWRITE:30,";
+  body += "ERR_WIND_SHORT_BUF_FULL:31,";
+  body += "ERR_SPEED_SHORT_BUF_FULL:32,";
+
+  // Temperature
+  body += "ERR_TEMP_READ:40,";
+
+  // Power and reset related
+  body += "ERR_POWERON_RESET:51,";
+  body += "ERR_BROWNOUT_RESET:52,";
+  body += "ERR_PANIC_RESET:53,";
+  body += "ERR_WDT_RESET:54,";
+  body += "ERR_SDIO_RESET:55,";
+  body += "ERR_USB_RESET:56,";
+  body += "ERR_JTAG_RESET:57,";
+  body += "ERR_EFUSE_RESET:58,";
+  body += "ERR_PWR_GLITCH_RESET:59,";
+  body += "ERR_CPU_LOCKUP_RESET:60,";
+  body += "ERR_UNEXPECTED_RESET:61;";
+
   return body;
 }
 
@@ -2018,7 +2110,8 @@ const char* sendResultToStr(SendResult r) {
     case SendResult::NO_SIM:          return "No SIM";
     case SendResult::CSQ_FAIL:        return "CSQ failed";
     case SendResult::REG_FAIL:        return "Network registration failed";
-    case SendResult::CIMI_FAIL:       return "CIMI failed";
+    case SendResult::CCLK_FAIL:       return "get time failed";
+    case SendResult::CIMI_FAIL:       return "get imi num failed";
     case SendResult::GPRS_SETUP_FAIL: return "GPRS setup failed";
     case SendResult::HTTP_FAIL:       return "HTTP failed";
     default:                          return "Unknown";
@@ -2031,14 +2124,16 @@ void logSendErrorForResult(SendResult r) {
     case SendResult::NO_SIM:          elog.log(ErrorLogger::ERR_SEND_NO_SIM);    break;
     case SendResult::CSQ_FAIL:        elog.log(ErrorLogger::ERR_SEND_CSQ_FAIL);  break;
     case SendResult::REG_FAIL:        elog.log(ErrorLogger::ERR_SEND_REG_FAIL);  break;
+    case SendResult::CCLK_FAIL:       elog.log(ErrorLogger::ERR_SEND_CCLK_FAIL); break;
     case SendResult::CIMI_FAIL:       elog.log(ErrorLogger::ERR_SEND_CIMI_FAIL); break;
     case SendResult::GPRS_SETUP_FAIL: elog.log(ErrorLogger::ERR_SEND_GPRS_FAIL); break;
     case SendResult::HTTP_FAIL:       elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_DATA); break;
-    default: break; // OK or unknown: no log here
+    case SendResult::OK: break; 
+    default: elog.log(ErrorLogger::ERR_SEND_UNKWN_FAIL); break;
   }
 }
 
-SendResult runHttpGetHot() {
+SendResult runHttpGetHot(int nTry) {
   Serial_println("\n\nExecuting HTTP GET HOT...");
 
   if (!waitForResponse("AT", prefs.at_timeout_s, nullptr)) return SendResult::AT_FAIL;
@@ -2064,6 +2159,11 @@ SendResult runHttpGetHot() {
     // probably missing automatic time update NITZ
     sendCommand("AT+CLTS=1");
     sendCommand("AT&W");
+
+    if(nTry == 0) {
+      // first try so we will repeat the sending and see if we can actually get the time next time
+      return SendResult::CCLK_FAIL;
+    }
   }
 
   if (!waitForResponse("AT+CIMI", 10, parseCIMIResponse, 500)) return SendResult::CIMI_FAIL;

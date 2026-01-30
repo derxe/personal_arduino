@@ -1,6 +1,3 @@
-#pragma once
-
-
 class ErrorLogger {
 public:
 
@@ -12,32 +9,39 @@ public:
         ERR_SEND_NO_SIM          = 2, 
         ERR_SEND_CSQ_FAIL        = 3, 
         ERR_SEND_REG_FAIL        = 4, 
-        ERR_SEND_CIMI_FAIL       = 5, 
-        ERR_SEND_GPRS_FAIL       = 6, 
-        ERR_SEND_HTTP_FAIL_DATA  = 7,  
-        ERR_SEND_HTTP_FAIL_PREFS = 8,  
-        ERR_SEND_REPEAT          = 9, 
+        ERR_SEND_CCLK_FAIL       = 5,
+        ERR_SEND_CIMI_FAIL       = 6, 
+        ERR_SEND_GPRS_FAIL       = 7, 
+        ERR_SEND_HTTP_FAIL_DATA  = 8,  
+        ERR_SEND_HTTP_FAIL_PREFS = 9,
+        ERR_SEND_UNKWN_FAIL      = 10,
+        ERR_SEND_REPEAT          = 11, 
 
         ERR_DIR_READ             = 20,
         ERR_DIR_READ_ONCE        = 21,
-        ERR_WIND_BUF_OVERWRITE   = 22,
-        ERR_WIND_SHORT_BUF_FULL  = 23, 
-        ERR_SPEED_SHORT_BUF_FULL = 24, 
-        ERR_DIR_SHORT_BUF_FULL   = 25, 
-        ERR_TEMP_READ            = 26, 
+        ERR_DIR_NOT_CONNECTED    = 22,
+        ERR_DIR_SHORT_BUF_FULL   = 23, 
+        ERR_DIR_SDA_NOT_CONN     = 24,
+        ERR_DIR_SCL_NOT_CONN     = 25,
+
+        ERR_WIND_BUF_OVERWRITE   = 30,
+        ERR_WIND_SHORT_BUF_FULL  = 31, 
+        ERR_SPEED_SHORT_BUF_FULL = 32, 
+
+        ERR_TEMP_READ            = 40, 
 
         // Power and reset related errors
-        ERR_POWERON_RESET       = 31, // normal power-on reset (info)
-        ERR_BROWNOUT_RESET      = 32, // brown-out or low-voltage reset
-        ERR_PANIC_RESET         = 33, // software panic or abort
-        ERR_WDT_RESET           = 34, // watchdog reset (task/int/other)
-        ERR_SDIO_RESET          = 35, // reset triggered over SDIO
-        ERR_USB_RESET           = 36, // reset by USB peripheral
-        ERR_JTAG_RESET          = 37, // reset by JTAG
-        ERR_EFUSE_RESET         = 38, // reset due to efuse error
-        ERR_PWR_GLITCH_RESET    = 39, // reset due to power glitch detection
-        ERR_CPU_LOCKUP_RESET    = 40, // reset due to CPU lockup (double exception)
-        ERR_UNEXPECTED_RESET    = 41, // reset reason unexpected / unclassified
+        ERR_POWERON_RESET       = 51, // normal power-on reset (info)
+        ERR_BROWNOUT_RESET      = 52, // brown-out or low-voltage reset
+        ERR_PANIC_RESET         = 53, // software panic or abort
+        ERR_WDT_RESET           = 54, // watchdog reset (task/int/other)
+        ERR_SDIO_RESET          = 55, // reset triggered over SDIO
+        ERR_USB_RESET           = 56, // reset by USB peripheral
+        ERR_JTAG_RESET          = 57, // reset by JTAG
+        ERR_EFUSE_RESET         = 58, // reset due to efuse error
+        ERR_PWR_GLITCH_RESET    = 59, // reset due to power glitch detection
+        ERR_CPU_LOCKUP_RESET    = 60, // reset due to CPU lockup (double exception)
+        ERR_UNEXPECTED_RESET    = 61, // reset reason unexpected / unclassified
 
         ERR_COUNT_MAX           = 100 // 100 (not an error, count only)
     };
@@ -122,19 +126,28 @@ public:
             case ERR_SEND_NO_SIM:          return "No SIM card detected";
             case ERR_SEND_CSQ_FAIL:        return "Signal quality (CSQ) check failed";
             case ERR_SEND_REG_FAIL:        return "Network registration failed";
+            case ERR_SEND_CCLK_FAIL:       return "Network time (CCLK) retrieval failed";
             case ERR_SEND_CIMI_FAIL:       return "IMSI (CIMI) retrieval failed";
             case ERR_SEND_GPRS_FAIL:       return "GPRS/Data connection failed";
             case ERR_SEND_HTTP_FAIL_DATA:  return "HTTP data send failed";
             case ERR_SEND_HTTP_FAIL_PREFS: return "HTTP prefs send failed";
+            case ERR_SEND_UNKWN_FAIL:      return "Unknown send failure";
             case ERR_SEND_REPEAT:          return "Send had to be repeated";
 
-            // Wind / sensor / buffers
+            // Direction / I2C / buffers
             case ERR_DIR_READ:             return "Direction read error";
             case ERR_DIR_READ_ONCE:        return "Direction read error (single occurrence)";
+            case ERR_DIR_NOT_CONNECTED:    return "Direction sensor not connected";
+            case ERR_DIR_SHORT_BUF_FULL:   return "Direction short buffer full";
+            case ERR_DIR_SDA_NOT_CONN:     return "Direction sensor SDA not connected";
+            case ERR_DIR_SCL_NOT_CONN:     return "Direction sensor SCL not connected";
+
+            // Wind / speed buffers
             case ERR_WIND_BUF_OVERWRITE:   return "Wind buffer overwrite";
             case ERR_WIND_SHORT_BUF_FULL:  return "Wind short buffer full";
             case ERR_SPEED_SHORT_BUF_FULL: return "Speed short buffer full";
-            case ERR_DIR_SHORT_BUF_FULL:   return "Direction short buffer full";
+
+            // Temperature
             case ERR_TEMP_READ:            return "Temperature read error";
 
             // Power and reset related
@@ -153,6 +166,7 @@ public:
             default:                      return "Unknown ErrorCode";
         }
     }
+
 
 private:
     // New class member: Static array to hold the counts.

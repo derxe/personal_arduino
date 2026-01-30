@@ -13,6 +13,7 @@
 #include "FloatRunningAverage.h"
 #include <string.h>  // for memcpy
 #include "AHT20_SoftI2C.h"
+#include "unix_compile_time.h"
 
 typedef struct {
     uint16_t avg;
@@ -59,16 +60,14 @@ struct AppPrefs {
   float  vsolar_calib;           // calibration for converting the measured voltage on vsolar to the actual voltage
 };
 
-#define SCHEMA_VERSION  22
-
 // define default preferences:
 AppPrefs prefs = {
-  /*pref_version*/              12,
+  /*pref_version*/              0,
   /*pref_set_date*/             0, 
   /*version*/                   "v6",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
-  /*url_errors*/                "http://46.224.24.144/veter/save_errors/",
+  /*url_errors*/                "http://46.224.24.144/veter/save_error/",
 
   /*light_sleep_enabled*/       1,
   /*sleep_enabled*/             0,
@@ -250,7 +249,11 @@ void printVersionAndCompileDate() {
   Serial_print("Compiled on ");
   Serial_print(__DATE__);
   Serial_print(" at ");
-  Serial_println(__TIME__);
+  Serial_print(__TIME__);
+  Serial_print(" unix:");
+  Serial_println(BUILD_UNIX_TIME);
+
+  Serial_print("Version:"); Serial_println(prefs.version);
 }
 
 
@@ -351,7 +354,8 @@ static void printResetInfo(const ResetInfo& i) {
 
 ErrorLogger elog;
 
-PrefBlob<AppPrefs> store(SCHEMA_VERSION);
+// pass in BUILD_UNIX_TIME so that we update the preferences on each new compile 
+PrefBlob<AppPrefs> store(BUILD_UNIX_TIME);
 
 void loadPreferences() {
   store.begin();
@@ -489,8 +493,9 @@ void setup() {
 
   Serial_println();
   Serial_println("### PROGRAM START! ###");
-  Serial_print("Compiled on "); Serial_println(__DATE__ " " __TIME__);
-  Serial_print("Version:"); Serial_println(prefs.version);
+  printVersionAndCompileDate();
+
+  elog.init();
 
   restoreTimeIfScheduledReset();
 

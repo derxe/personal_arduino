@@ -10,8 +10,8 @@ class PrefBlob {
                 "T must be trivially copyable (POD-like).");
 
 public:
-  // ctor: optional version tag you bump when the layout changes
-  explicit PrefBlob(uint16_t version = 1) : _version(version) {}
+  // ctor: optional compile_time tag you bump when we compile a new version
+  explicit PrefBlob(uint32_t compile_time = 0) : _compile_time(compile_time) {}
 
   // Open NVS namespace (rw by default). Note: NVS key length <= 15 chars.
   bool begin() {
@@ -39,7 +39,7 @@ public:
     const Header* hdr = reinterpret_cast<const Header*>(buf.get());
     if (hdr->magic != MAGIC) return -5;
     if (hdr->size  != sizeof(T)) return -6;         // struct size changed
-    if (hdr->version != _version) return -7;         // stored newer than firmware
+    if (hdr->compile_time != _compile_time) return -7;         // stored newer than firmware
 
     const uint8_t* payload = buf.get() + sizeof(Header);
     uint32_t crc = crc32(payload, sizeof(T));
@@ -55,7 +55,7 @@ public:
 
     Packed p;
     p.h.magic   = MAGIC;
-    p.h.version = _version;
+    p.h.compile_time = _compile_time;
     p.h.size    = sizeof(T);
     memcpy(&p.payload, &in, sizeof(T));
     p.h.crc32   = crc32(reinterpret_cast<const uint8_t*>(&p.payload), sizeof(T));
@@ -77,7 +77,7 @@ public:
 private:
   struct Header {
     uint32_t magic;   // 'PBLB'
-    uint16_t version; // you bump this in firmware when you redefine T
+    uint16_t compile_time; // save when the program was compiled so that we know to bump it up when new version is installed
     uint16_t size;    // sizeof(T)
     uint32_t crc32;   // CR_namespaceC of payload (T bytes)
   };
@@ -105,7 +105,7 @@ private:
   Preferences _prefs;
   const char* _nvsNamespace = "app";
   const char* _key = "prefs_blob";
-  uint16_t _version;
+  uint16_t _compile_time;
   bool _begun = false;
 
   T  _loadedCopy{};

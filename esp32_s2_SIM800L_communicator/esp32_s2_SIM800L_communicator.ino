@@ -1,8 +1,8 @@
-#define UART_DEBUG_TX  16
-#define UART_DEBUG_RX  14 // unused pin 14
+#define UART_DEBUG_TX_PIN  16
+#define UART_DEBUG_RX_PIN  14 // unused pin 14
 
 #include <SerialMod0.h>
-SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX, UART_DEBUG_RX); 
+SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX_PIN, UART_DEBUG_RX_PIN); 
 #define SerialDBG SerialUart0
 
 #define Serial_print(x)    do { SerialDBG.print(x); /* Serial1.print(x);*/ } while (0)
@@ -135,7 +135,7 @@ enum class SendResult : int {
 #define SerialAT Serial1
 
 #define BUTTON_PIN       9
-#define BUTTON_PIN_2     11
+#define BUTTON_2_PIN     11
 #define GPRS_ON_PIN      18   // MOS FET turn on pin
 #define GPRS_POWER_PIN   35   // PWX pin on the SIM800C board
 #define V_BATT_PIN       13
@@ -260,7 +260,6 @@ void printVersionAndCompileDate() {
 
 
 void printAS5600Config() {
-
   //portENTER_CRITICAL(&timerMux);
 
   digitalWrite(AS600_POWER_PIN, HIGH);  
@@ -559,7 +558,7 @@ void setup() {
   button.begin(BUTTON_PIN);
   button.setPressedHandler(tap);
 
-  button2.begin(BUTTON_PIN_2);
+  button2.begin(BUTTON_2_PIN);
   button2.setPressedHandler(tap2);
 
   checkSensorsConnected();

@@ -1,6 +1,8 @@
 class ErrorLogger {
 public:
 
+    static constexpr int ERROR_CODE_VERSION = 4;
+
     // --- Enum of all possible errors ---
     enum ErrorCode {
         ERR_NONE = 0,               // no error
@@ -38,10 +40,13 @@ public:
         ERR_TEMP_READ            = 40,
 
         // ---- POWER / RESET ----
-        ERR_BROWNOUT_RESET       = 52,
-        ERR_PANIC_RESET          = 53,
-        ERR_WDT_RESET            = 54,
-        ERR_UNEXPECTED_RESET     = 61,
+        ERR_RESET_BROWNOUT       = 52,
+        ERR_RESET_PANIC          = 53,
+        ERR_RESET_WDT            = 54,
+        ERR_RESET_UNEXPECTED     = 61,
+        
+        LOG_RESET_SW             = 70,
+        LOG_RESET_POWERON        = 71,
 
         ERR_COUNT_MAX            = 100
     };
@@ -79,7 +84,7 @@ public:
     void logTmp(ErrorCode code) {
         if (code >= 0 && code < ERR_COUNT_MAX) {
             _errorCountsTemp[code]++;
-            Serial_print("Log error tmp: "); Serial_println(code);
+            //Serial_print("Log error tmp: "); Serial_println(code);
         }
     }
 
@@ -207,20 +212,25 @@ public:
                 return "Temperature read error";
 
             // ---- POWER / RESET ----
-            case ERR_BROWNOUT_RESET:
+            case ERR_RESET_BROWNOUT:
                 return "Brown-out / low-voltage reset";
-            case ERR_PANIC_RESET:
+            case ERR_RESET_PANIC:
                 return "Software panic / abort reset";
-            case ERR_WDT_RESET:
+            case ERR_RESET_WDT:
                 return "Watchdog reset";
-            case ERR_UNEXPECTED_RESET:
+            case ERR_RESET_UNEXPECTED:
                 return "Unexpected / unclassified reset";
+
+            case LOG_RESET_SW:
+                return "Log software reset";
+
+            case LOG_RESET_POWERON:
+                return "Log reset poweron";
 
             default:
                 return "Unknown ErrorCode";
         }
     }
-
 
 private:
     static constexpr int ERROR_COUNT = ERR_COUNT_MAX;

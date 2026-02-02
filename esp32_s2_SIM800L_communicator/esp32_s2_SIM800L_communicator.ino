@@ -42,7 +42,7 @@ struct AppPrefs {
   char     url_errors[128];      // url that is used to send all the error names 
 
   uint8_t  light_sleep_enabled;       // light sleep between reads, 0 if disabled, and 1 if enabled
-  uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled
+  uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
   int8_t   sleep_hour_start;          // which hour the device gets to sleep in 24 hour format 
   int8_t   sleep_hour_end;            // which hour the device is expected to wake up again
 
@@ -63,7 +63,7 @@ struct AppPrefs {
   uint8_t  blink_led_interval;   // deca seconds 10 for 1 seconds, hof often the blink led blinks
 
   uint8_t  as5600_pwr_on_time;   // ms of how long to wait after power on before reading it, It is also an interupt cycle
-  uint8_t  as5600_read_interval; // deca seconds 10 for 1 seconds, // how ofter we want to read direction
+  int16_t  as5600_read_interval; // seconds how ofter we want to read direction, -1 to disable reading direction
   
   uint16_t wind_log_store_len;   // how many wind data we can store, to be send on the next interaction 
 
@@ -81,8 +81,8 @@ AppPrefs prefs = {
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
 
   /*light_sleep_enabled*/       1,
-  /*sleep_enabled*/             0,
-  /*sleep_hour_start*/          20,
+  /*sleep_enabled*/             2,
+  /*sleep_hour_start*/          18,
   /*sleep_hour_end*/            6,
 
   /*store_wind_data_interval*/  5,
@@ -102,7 +102,7 @@ AppPrefs prefs = {
   /*blink_led_interval*/        20,  
 
   /*as5600_pwr_on_time*/        100,
-  /*as5600_read_interval*/      30,
+  /*as5600_read_interval*/      3,
 
   /*wind_log_store_len*/        600,
 
@@ -140,6 +140,10 @@ enum class SendResult : int {
 #define GPRS_POWER_PIN   35   // PWX pin on the SIM800C board
 #define V_BATT_PIN       13
 #define V_SOALR_PIN      8
+
+#define POWER_GPRS_BOARD_ON()  do { pinMode(GPRS_ON_PIN, OUTPUT); digitalWrite(GPRS_ON_PIN, LOW); } while (0)
+#define POWER_GPRS_BOARD_OFF() do { digitalWrite(GPRS_ON_PIN, HIGH); pinMode(GPRS_ON_PIN, INPUT); } while (0)
+
 
 #define BLINK_LED_PIN      15
 //#define BLINK_LED_ON_TIME  20    
@@ -378,7 +382,6 @@ void loadPreferences() {
     prefs = prefsLoaded;
   }
 
-
   printPreferences();
 
   store.end();
@@ -485,8 +488,11 @@ void checkSensorsConnected() {
 
 String version = "2.1";
 bool accurateTimeSet = false;
+bool hasSendAfterTurnOn = false; 
 
 void setup() {
+  hasSendAfterTurnOn = false;
+
   //Serial.begin(115200);
   setTime(15, 0, 0, 29, 9, 2025);
 
@@ -508,15 +514,29 @@ void setup() {
   printResetInfo(ri);
 
   switch (ri.reason) {
-    case ESP_RST_BROWNOUT:       elog.log(ErrorLogger::ERR_BROWNOUT_RESET); break;
-    case ESP_RST_PANIC:          elog.log(ErrorLogger::ERR_PANIC_RESET); break;
+    case ESP_RST_BROWNOUT:       
+      elog.log(ErrorLogger::ERR_RESET_BROWNOUT); break;
+
+    case ESP_RST_PANIC:          
+      elog.log(ErrorLogger::ERR_RESET_PANIC); break;
+
     case ESP_RST_INT_WDT:
     case ESP_RST_TASK_WDT:
-    case ESP_RST_WDT:            elog.log(ErrorLogger::ERR_WDT_RESET); break;
-    case ESP_RST_DEEPSLEEP:      
+    case ESP_RST_WDT:            
+      elog.log(ErrorLogger::ERR_RESET_WDT); break;
+
+    default:                     
+      elog.log(ErrorLogger::ERR_RESET_UNEXPECTED); break;
+
+    /* expected bootups  */
     case ESP_RST_POWERON:        
-    case ESP_RST_SW:             /* considered expected here */ break;
-    default:                     elog.log(ErrorLogger::ERR_UNEXPECTED_RESET); break;
+       elog.log(ErrorLogger::LOG_RESET_POWERON); break;
+
+    case ESP_RST_SW:        
+       elog.log(ErrorLogger::LOG_RESET_SW); break;
+
+    case ESP_RST_DEEPSLEEP:                
+      break;
   }
   // TODO if the reason is unexpected_reset get more information about it 
   // We should also check ESP_RST_EXT and treat it as error reason 
@@ -530,13 +550,14 @@ void setup() {
   } else {
     // timeWas set before sleep so we can check if is time to wake up already!
     setTime(timeBeforeSleep + DEEP_SLEEP_DURATION / 1000000);
+    accurateTimeSet = true;
     Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeLibString());
     evaluateIfDeepSleep();
   }
 
   SerialAT.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN); // 33, 34);
 
-  pinMode(GPRS_ON_PIN, INPUT); // off
+  POWER_GPRS_BOARD_OFF();
   pinMode(GPRS_POWER_PIN, OUTPUT); digitalWrite(GPRS_POWER_PIN, HIGH); // off
   pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
   pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);    // off
@@ -653,7 +674,10 @@ void setup() {
     .name = "readDirection_timer"
   };
   esp_timer_create(&readDirection_args, &readDirection_timer);
-  esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time*1000); 
+  if(prefs.as5600_read_interval > 0) { 
+    esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time*1000); 
+  }
+  
 
   esp_timer_handle_t storeWindData_timer;
   const esp_timer_create_args_t storeWindData_args = {
@@ -830,7 +854,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
   #define MAGNET_READ_REPEATS 4
   int8_t readRepeats;
 
-  uint16_t ir_cycles = (prefs.as5600_read_interval*100 / prefs.as5600_pwr_on_time);
+  uint16_t ir_cycles = (prefs.as5600_read_interval*1000 / prefs.as5600_pwr_on_time);
 
   //Serial.flush();
   if(directionReadCount == 1) {
@@ -1076,8 +1100,8 @@ void IRAM_ATTR onStoreWindData(void* arg) {
   int avgSpeed = avgSpeedSum / speeds_log_i;
   speeds_log_i = 0;
 
-
-  int16_t avgDir = average_direction(directions_log, directions_log_i);
+  // if there is no directions_log set the value to -1 so that we know that no value was read
+  int16_t avgDir = directions_log_i == 0 ? -1 : average_direction(directions_log, directions_log_i);
   directions_log_i = 0;
   
   uint32_t timestamp = get_log_timestamp();;
@@ -1143,7 +1167,8 @@ bool isSleepHour(int start, int end, int hour) {
 }
 
 bool isDeepSleepTime() {
-  if(!prefs.sleep_enabled) return false; // dont do anything if it is disabled 
+  if(!prefs.sleep_enabled == 0) return false; // dont do anything if it is disabled 
+  if(!prefs.sleep_enabled == 2 && hasSendAfterTurnOn == false) return false; // we dont go to sleep if we dont try sending first // if sleep mode 2 (sends once after sleeping) and if there is no send after turn on meaning it hasnt tried sending yet dont go to deep sleep until the send it at least once 
   if(!accurateTimeSet) return false; // the time was not set from the GMS module yet
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
@@ -1152,8 +1177,7 @@ bool isDeepSleepTime() {
   return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour());
 }
 
-void evaluateIfDeepSleep() {
-  if(isDeepSleepTime()) {
+void goToDeepSleep() {
     Serial_print("Current time is:"); Serial_println(getFormattedTimeLibString());
     Serial_print("It is time to go deep sleep for: "); Serial_print(DEEP_SLEEP_DURATION/(1000000*60)); 
     Serial_print(" minutes!");
@@ -1162,7 +1186,10 @@ void evaluateIfDeepSleep() {
     timeBeforeSleep = now();
     esp_sleep_enable_timer_wakeup(DEEP_SLEEP_DURATION);
     esp_deep_sleep_start();  // after this, it won't return here — will restart from setup()
-  }
+}
+
+void evaluateIfDeepSleep() {
+  if(isDeepSleepTime()) goToDeepSleep();
 }
 
 FloatRunningAverage<32> vBattAvg(read_batt_v);
@@ -1191,6 +1218,7 @@ void loop() {
     fullCycleSend();
   }
 
+  // read battery voltage every 5s
   if(millis() - lastVBattIdeLog > 5*1000) {
     lastVBattIdeLog = millis();
     vBattAvg.log();
@@ -1208,12 +1236,12 @@ void loop() {
 
   //updateSerial();
 
-  bool enoughTimePassed = millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
-  if(enoughTimePassed && prefs.light_sleep_enabled) {
-    esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
-  } else {
-    delay(1);
-  }
+  bool enoughTimePassed = true; // millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
+  //if(enoughTimePassed && prefs.light_sleep_enabled) {
+  esp_sleep_enable_timer_wakeup(50*1000); esp_light_sleep_start(); // 5 ms sleep 
+  //} else {
+  //  delay(1);
+  //}
 }
 
 float read_batt_v() {
@@ -1228,12 +1256,12 @@ void turnOnModule() {
   Serial1.println("turning on");
 
   for(int i=0; i<40;i++){
-    digitalWrite(GPRS_ON_PIN, LOW);
-    delayMicroseconds(50*i); digitalWrite(GPRS_ON_PIN, HIGH);
-    pinMode(GPRS_ON_PIN, INPUT);
+    POWER_GPRS_BOARD_ON();
+    delayMicroseconds(50*i); 
+    POWER_GPRS_BOARD_OFF();
     delay(3);
   }
-  pinMode(GPRS_ON_PIN, OUTPUT); digitalWrite(GPRS_ON_PIN, LOW);
+  POWER_GPRS_BOARD_ON();
 
   delay(1000);
 
@@ -1246,8 +1274,8 @@ void turnOnModule() {
 }
 
 void turnOffModule() {
-  pinMode(GPRS_ON_PIN, INPUT);
-  //digitalWrite(GPRS_ON_PIN, HIGH);
+  POWER_GPRS_BOARD_OFF();
+
   Serial_println("gprs high -> turning off");
 }
 
@@ -1293,6 +1321,7 @@ void fullCycleSend() {
     elog.log(ErrorLogger::ERR_TEMP_READ);
   }
 
+  hasSendAfterTurnOn = true; // we tried sending!
   for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
     Serial_print("Sending try n:"); Serial_println(nTry);
     
@@ -1648,8 +1677,8 @@ bool parseCCLKResponse(const String& response) {
   Serial_println("Got new date!");
   // save the time inside the TimeLib library
   shiftTimestampsOnNewTime(hour, minute, second); 
-  accurateTimeSet = true;
   setTime(hour, minute, second, day, month, year);
+  accurateTimeSet = true;
 
   // Print the parsed time
   Serial_print("New date:"); Serial_println(getFormattedTimeLibString());
@@ -1793,7 +1822,7 @@ void restoreTimeIfScheduledReset() {
         time_t restored = (time_t)saved + ESTIMATED_RESET_SECONDS;
 
         setTime(restored); // Restore time into TimeLib
-
+        accurateTimeSet = true;
         Serial_print("Restored time after scheduled reset: ");  Serial_println(restored);
         Serial_print("Restored datetime: "); Serial_println(getFormattedTimeLibString());
     } else {
@@ -1971,6 +2000,7 @@ String getPostBody() {
   body += "simDur=" + String(simDuration / 1000.0, 1) + ";";
   body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
   body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
+  body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
   body += "errors=" + elog.getAllForSend() + ";";
   body += getWindData();
 
@@ -2017,6 +2047,7 @@ String getPostBodyPrefs() {
   body += "vbat_calib=" + String(prefs.vbat_calib) + ";";
   body += "vsolar_calib=" + String(prefs.vsolar_calib) + ";";
 
+
   return body;
 }
 
@@ -2060,14 +2091,16 @@ String getPostErrorsList() {
   body += "ERR_TEMP_READ:40,";
 
   // ---- POWER / RESET ----
-  body += "ERR_BROWNOUT_RESET:52,";
-  body += "ERR_PANIC_RESET:53,";
-  body += "ERR_WDT_RESET:54,";
-  body += "ERR_UNEXPECTED_RESET:61;";
+  body += "ERR_RESET_BROWNOUT:52,";
+  body += "ERR_RESET_PANIC:53,";
+  body += "ERR_RESET_WDT:54,";
+  body += "ERR_RESET_UNEXPECTED:61;";
+
+  body += "LOG_RESET_SW:70,";
+  body += "LOG_RESET_POWERON:71;";
 
   return body;
 }
-
 
 
 String waitForHttpActionResponse(unsigned long timeoutMs) {

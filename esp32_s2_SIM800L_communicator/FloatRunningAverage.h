@@ -20,6 +20,10 @@ public:
         if (count == 0) return log();
         return sum / (float)count;
     }
+    
+    int size() {
+    	return count;
+    }
 
     bool isEmpty() const { return count == 0; }
 

@@ -39,7 +39,7 @@ struct AppPrefs {
   char     version[8];                // program/sw version
   char     url_data[128];             // url that is used to send the data to 
   char     url_prefs[128];            // url that is used to send the preferences to if requeste
-  char     url_errors[128];      // url that is used to send all the error names 
+  char     url_errors[128];           // url that is used to send all the error names 
 
   uint8_t  light_sleep_enabled;       // light sleep between reads, 0 if disabled, and 1 if enabled
   uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
@@ -75,7 +75,7 @@ struct AppPrefs {
 AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
-  /*version*/                   "v6",
+  /*version*/                   "v7",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
@@ -83,10 +83,10 @@ AppPrefs prefs = {
   /*light_sleep_enabled*/       1,
   /*sleep_enabled*/             2,
   /*sleep_hour_start*/          18,
-  /*sleep_hour_end*/            6,
+  /*sleep_hour_end*/            7,
 
   /*store_wind_data_interval*/  5,
-  /*send_data_interval*/        10,
+  /*send_data_interval*/        2,
   /*n_send_retries*/            5,
 
   /*at_timeout_s*/              10,
@@ -216,14 +216,15 @@ Single battery powered
 AS5600 as5600; 
 
 // this temerature sensor is inside
-#define AHT20_1_PWR_PIN   17
-#define AHT20_1_SDA_PIN   21
-#define AHT20_1_SCL_PIN   34
+#define AHT20_1_PWR_PIN   40
+#define AHT20_1_SDA_PIN   36
+#define AHT20_1_SCL_PIN   38
 AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN);
 
-#define AHT20_2_PWR_PIN   40
-#define AHT20_2_SDA_PIN   36
-#define AHT20_2_SCL_PIN   38
+// for the outside sensor 
+#define AHT20_2_PWR_PIN   17
+#define AHT20_2_SDA_PIN   21
+#define AHT20_2_SCL_PIN   34
 AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN);
 
 
@@ -247,7 +248,7 @@ void IRAM_ATTR onStoreWindData(void* arg);
 void tap(Button2& btn);
 void tap2(Button2& btn);
 
-#define DEEP_SLEEP_DURATION  3600ULL * 1000000 // value in microseconds so: one hour
+#define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
 //#define DEEP_SLEEP_DURATION  10 * 1000 * 1000  // 10 seconds
 RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
 
@@ -1167,12 +1168,13 @@ bool isSleepHour(int start, int end, int hour) {
 }
 
 bool isDeepSleepTime() {
-  if(!prefs.sleep_enabled == 0) return false; // dont do anything if it is disabled 
-  if(!prefs.sleep_enabled == 2 && hasSendAfterTurnOn == false) return false; // we dont go to sleep if we dont try sending first // if sleep mode 2 (sends once after sleeping) and if there is no send after turn on meaning it hasnt tried sending yet dont go to deep sleep until the send it at least once 
+  if(prefs.sleep_enabled == 0) return false; // dont do anything if it is disabled 
+  if(prefs.sleep_enabled == 2 && hasSendAfterTurnOn == false) return false; // we dont go to sleep if we dont try sending first // if sleep mode 2 (sends once after sleeping) and if there is no send after turn on meaning it hasnt tried sending yet dont go to deep sleep until the send it at least once 
   if(!accurateTimeSet) return false; // the time was not set from the GMS module yet
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
 
+  Serial_print("sleep?"); Serial_println(isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour()));
   // we sleep at night ofcorse! from 8 PM to 6 AM
   return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour());
 }
@@ -1214,7 +1216,7 @@ void loop() {
 
   if(millis() - lastSend > prefs.send_data_interval*60*1000) {
     lastSend = millis();
-    Serial_print(String(prefs.send_data_interval) + " min passed doing send");
+    Serial_println(String(prefs.send_data_interval) + " min passed doing send");
     fullCycleSend();
   }
 
@@ -1236,12 +1238,12 @@ void loop() {
 
   //updateSerial();
 
-  bool enoughTimePassed = true; // millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
-  //if(enoughTimePassed && prefs.light_sleep_enabled) {
-  esp_sleep_enable_timer_wakeup(50*1000); esp_light_sleep_start(); // 5 ms sleep 
-  //} else {
-  //  delay(1);
-  //}
+  bool enoughTimePassed = millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
+  if(enoughTimePassed && prefs.light_sleep_enabled) {
+    esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
+  } else {
+    delay(1);
+  }
 }
 
 float read_batt_v() {
@@ -1984,10 +1986,10 @@ String getPostBody() {
   String body = "";
   body.reserve(512);   // avoid fragmentation, improve speed
   body += "pref=" + String(prefs.pref_version) + ";";
-  body += "prefDate=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
+  //body += "prefDate=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
   body += "ver=" + String(prefs.version) + ";";
-  body += "imsi=" + imsiNum + ";";
-  body += "phoneNum=" + phoneNum + ";";
+  //body += "imsi=" + imsiNum + ";";
+  //body += "phoneNum=" + phoneNum + ";";
   body += "temp_in=" + String(temp_in, 1) + ";";
   body += "hum_in=" + String(hum_in, 0) + ";";
   body += "temp_out=" + String(temp_out, 1) + ";";
@@ -1997,10 +1999,10 @@ String getPostBody() {
   body += "vsol=" + String(vSolarAvg.get(), 3) + ";"; 
   body += "dur=" + String((millis() - httpGetStart) / 1000.0, 1) + ";";
   body += "signal=" + String(signalStrength) + ";";
-  body += "simDur=" + String(simDuration / 1000.0, 1) + ";";
-  body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
-  body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
-  body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
+  if (simDuration     > 3*1000) body += "simDur=" + String(simDuration / 1000.0, 1) + ";";
+  if (regDuration     > 4*1000) body += "regDur=" + String(regDuration / 1000.0, 1) + ";";
+  if (gprsRegDuration > 5*1000) body += "gprsRegDur=" + String(gprsRegDuration / 1000.0, 1) + ";";
+  //body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
   body += "errors=" + elog.getAllForSend() + ";";
   body += getWindData();
 
@@ -2009,8 +2011,9 @@ String getPostBody() {
 
 String getPostBodyPrefs() {
   String body;
-  body.reserve(512);   // avoid fragmentation, improve speed
+  body.reserve(1024);   // avoid fragmentation, improve speed
 
+  body += "compiled_on=" + getFormattedUnixTime(BUILD_UNIX_TIME) + ";";
   body += "pref_version=" + String(prefs.pref_version) + ";";
   body += "pref_set_date=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
   body += "version=" + String(prefs.version) + ";";
@@ -2047,6 +2050,9 @@ String getPostBodyPrefs() {
   body += "vbat_calib=" + String(prefs.vbat_calib) + ";";
   body += "vsolar_calib=" + String(prefs.vsolar_calib) + ";";
 
+  body += "imsi=" + imsiNum + ";";
+  body += "phoneNum=" + phoneNum + ";";
+  body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
 
   return body;
 }

@@ -142,9 +142,15 @@ void setup() {
 
   Serial1.begin(9600, SERIAL_8N1, 7, 9);
 
-  Wire.begin(33, 35, 400000);
+  Wire.begin(1, 2, 400000);
+  pinMode(3, OUTPUT);  digitalWrite(3, HIGH);
+
+  Wire1.begin(11, 8, 400000);
+  pinMode(9, OUTPUT);  digitalWrite(9, HIGH);
+
   //Wire1.begin(37, 39, 400000);
-  Wire1.begin(37, 39, 400000);
+  //Wire1.begin(7, 8, 400000);
+  //pinMode(9, OUTPUT);  digitalWrite(9, HIGH);
 }
 
 void loop() {

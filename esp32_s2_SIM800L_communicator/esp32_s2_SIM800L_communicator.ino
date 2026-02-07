@@ -25,6 +25,7 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX_PIN, UART_DEBUG_RX_PIN);
 #include <string.h>  // for memcpy
 #include "AHT20_SoftI2C.h"
 #include "unix_compile_time.h"
+#include "esp_task_wdt.h"
 
 typedef struct {
     uint16_t avg;
@@ -75,7 +76,7 @@ struct AppPrefs {
 AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
-  /*version*/                   "v7",
+  /*version*/                   "v8",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
@@ -249,7 +250,7 @@ void tap(Button2& btn);
 void tap2(Button2& btn);
 
 #define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
-//#define DEEP_SLEEP_DURATION  10 * 1000 * 1000  // 10 seconds
+//#define DEEP_SLEEP_DURATION  20 * 1000 * 1000  // 20 seconds
 RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
 
 void printVersionAndCompileDate() {
@@ -492,25 +493,12 @@ bool accurateTimeSet = false;
 bool hasSendAfterTurnOn = false; 
 
 void setup() {
+  pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
+  delay(500);
+
   hasSendAfterTurnOn = false;
 
-  //Serial.begin(115200);
-  setTime(15, 0, 0, 29, 9, 2025);
-
-  SerialDBG.begin(115200);
-
-  Serial_println();
-  Serial_println("### PROGRAM START! ###");
-  printVersionAndCompileDate();
-
   elog.init();
-
-  restoreTimeIfScheduledReset();
-
-  loadPreferences();
-
-  esp_log_level_set("i2c.master", ESP_LOG_NONE); 
-
   ResetInfo ri = readResetInfo();
   printResetInfo(ri);
 
@@ -539,6 +527,31 @@ void setup() {
     case ESP_RST_DEEPSLEEP:                
       break;
   }
+
+  esp_task_wdt_config_t twdt_config = {
+    .timeout_ms = 10*1000, // 10 seconds watchdog timout
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,    // Bitmask of all cores
+    .trigger_panic = true,
+	};
+  ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&twdt_config));
+  esp_task_wdt_add(NULL);
+
+  //Serial.begin(115200);
+  setTime(15, 0, 0, 29, 9, 2025);
+
+  SerialDBG.begin(115200);
+
+  Serial_println();
+  Serial_println("### PROGRAM START! ###");
+  printVersionAndCompileDate();
+
+  restoreTimeIfScheduledReset();
+
+  loadPreferences();
+
+  esp_log_level_set("i2c.master", ESP_LOG_NONE); 
+
+
   // TODO if the reason is unexpected_reset get more information about it 
   // We should also check ESP_RST_EXT and treat it as error reason 
   // the RST_EXT is when EN pin is pulled down 
@@ -560,7 +573,7 @@ void setup() {
 
   POWER_GPRS_BOARD_OFF();
   pinMode(GPRS_POWER_PIN, OUTPUT); digitalWrite(GPRS_POWER_PIN, HIGH); // off
-  pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
+  //pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
   pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);    // off
   pinMode(DIR_LED_PIN, OUTPUT);    digitalWrite(DIR_LED_PIN, LOW);          // off
   pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);         // off
@@ -1174,7 +1187,7 @@ bool isDeepSleepTime() {
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
 
-  Serial_print("sleep?"); Serial_println(isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour()));
+  //Serial_print("sleep?"); Serial_println(isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour()));
   // we sleep at night ofcorse! from 8 PM to 6 AM
   return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour());
 }
@@ -1204,6 +1217,7 @@ void loop() {
   button.loop();
   button2.loop();
   evaluateIfDeepSleep();
+  esp_task_wdt_reset();
 
   static uint32_t lastPrint = 0;
   static uint32_t lastVBattIdeLog = 0;
@@ -1228,8 +1242,10 @@ void loop() {
   }
 
   // check if the station was unable to send the data for longer then 1 hour 
-  if(millis() - lastSuccessfulSend > 1*60*60*1000) { 
+  #define NO_SEND_FORCE_RESET_TIME  1*60*60*1000
+  if(millis() - lastSuccessfulSend > NO_SEND_FORCE_RESET_TIME) { 
     Serial1.println("Unable to send the data for longer then 1 hour, force resetting.");
+    elog.log(ErrorLogger::ERR_CANT_SEND_FORCE_RST); 
     esp_restart();  // software reset
   }
 
@@ -1296,6 +1312,8 @@ void tap2(Button2& btn) {
 }
 
 void fullCycleSend() {
+  esp_task_wdt_delete(NULL);
+
   const int nSendRetrys = prefs.n_send_retries;
   bool sendOk = false;
 
@@ -1353,6 +1371,8 @@ void fullCycleSend() {
     turnOffModule();
     delay(1000);
   } 
+
+  esp_task_wdt_add(NULL);
 }
 
 void printDiagnosticInfo() {
@@ -1410,6 +1430,8 @@ void printDiagnosticInfo() {
 void tap(Button2& btn) {
   printPreferences();
   printDiagnosticInfo();
+
+  //goToDeepSleep();
 }
 
 String inputBuffer = "";
@@ -2100,9 +2122,10 @@ String getPostErrorsList() {
   body += "ERR_RESET_BROWNOUT:52,";
   body += "ERR_RESET_PANIC:53,";
   body += "ERR_RESET_WDT:54,";
-  body += "ERR_RESET_UNEXPECTED:61;";
+  body += "ERR_RESET_UNEXPECTED:55;";
+  body += "ERR_CANT_SEND_FORCE_RST:56;";
 
-  body += "LOG_RESET_SW:70,";
+  body += "LOG_RESET_SW:70;";
   body += "LOG_RESET_POWERON:71;";
 
   return body;

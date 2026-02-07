@@ -43,7 +43,8 @@ public:
         ERR_RESET_BROWNOUT       = 52,
         ERR_RESET_PANIC          = 53,
         ERR_RESET_WDT            = 54,
-        ERR_RESET_UNEXPECTED     = 61,
+        ERR_RESET_UNEXPECTED     = 55,
+        ERR_CANT_SEND_FORCE_RST  = 56,
         
         LOG_RESET_SW             = 70,
         LOG_RESET_POWERON        = 71,
@@ -220,6 +221,8 @@ public:
                 return "Watchdog reset";
             case ERR_RESET_UNEXPECTED:
                 return "Unexpected / unclassified reset";
+            case ERR_CANT_SEND_FORCE_RST:
+                return "Unable to send for long time, force reseting";
 
             case LOG_RESET_SW:
                 return "Log software reset";

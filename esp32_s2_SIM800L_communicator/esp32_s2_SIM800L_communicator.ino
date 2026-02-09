@@ -35,79 +35,81 @@ typedef struct {
 } WindSample;
 
 struct AppPrefs { 
-  uint16_t pref_version;              // just an intiger to difirentiata between different versions 
-  uint32_t pref_set_date;             // the date time when the preferences were set
-  char     version[8];                // program/sw version
-  char     url_data[128];             // url that is used to send the data to 
-  char     url_prefs[128];            // url that is used to send the preferences to if requeste
-  char     url_errors[128];           // url that is used to send all the error names 
+  uint16_t pref_version;               // just an intiger to difirentiata between different versions 
+  uint32_t pref_set_date;              // the date time when the preferences were set
+  char     version[8];                 // program/sw version
+  char     url_data[128];              // url that is used to send the data to 
+  char     url_prefs[128];             // url that is used to send the preferences to if requeste
+  char     url_errors[128];            // url that is used to send all the error names 
 
-  uint8_t  light_sleep_enabled;       // light sleep between reads, 0 if disabled, and 1 if enabled
-  uint8_t  sleep_enabled;             // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
-  int8_t   sleep_hour_start;          // which hour the device gets to sleep in 24 hour format 
-  int8_t   sleep_hour_end;            // which hour the device is expected to wake up again
+  uint8_t  light_sleep_enabled;        // light sleep between reads, 0 if disabled, and 1 if enabled and 2 if enabled only after 1 min after boot 
+  uint8_t  sleep_enabled;              // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
+  uint16_t sleep_2_send_interval_s;    // seconds to collect data before sending in sleep mode 2 
+  int8_t   sleep_hour_start;           // which hour the device gets to sleep in 24 hour format 
+  int8_t   sleep_hour_end;             // which hour the device is expected to wake up again
 
-  uint8_t  store_wind_data_interval;  // how ofthen the values (speed and dir) are saved 
-  uint8_t  send_data_interval;        // in minutes, how often do we send the data 
-  uint8_t  n_send_retries;            // how many times do we retry sending 
+  uint16_t store_wind_data_interval_s; // seconds between storing wind data (0 disables; also disables hal/read speed events)
+  uint8_t  send_data_interval_min;     // minutes between data sends 
+  uint8_t  n_send_retries;             // how many times do we retry sending 
 
-  uint8_t  at_timeout_s;              // timeouts for crutical AT commands
+  uint8_t  at_timeout_s;               // timeouts for crutical AT commands
   uint8_t  sim_timeout_s;
   uint8_t  csq_timeout_s;             
   uint8_t  creg_timeout_s;  
   uint8_t  cgreg_timeout_s;  
 
-  uint8_t  error_led_on_time;    // <=0 to disable it, in ms, how log the error led stays on when blinking 
-  uint8_t  dir_led_on_time;      // <=0 to disable it, in ms, how log the direc led stays on when blinking 
-  uint8_t  spin_led_on_time;     // <=0 to disable it, in ms, how log the spin  led stays on when blinking 
-  uint8_t  blink_led_on_time;    // <=0 to disable it, in ms, how log the blink led stays on when blinking 
-  uint8_t  blink_led_interval;   // deca seconds 10 for 1 seconds, hof often the blink led blinks
+  uint8_t  error_led_on_time_ms;    // ms error LED stays on when blinking (<=0 disables)
+  uint8_t  dir_led_on_time_ms;      // ms direction LED stays on when blinking (<=0 disables)
+  uint8_t  spin_led_on_time_ms;     // ms spin LED stays on when blinking (<=0 disables)
+  uint8_t  blink_led_on_time_ms;    // ms blink LED stays on when blinking (<=0 disables)
+  uint8_t  blink_led_interval_ds;   // deciseconds (0.1 s) between blink cycles
 
-  uint8_t  as5600_pwr_on_time;   // ms of how long to wait after power on before reading it, It is also an interupt cycle
-  int16_t  as5600_read_interval; // seconds how ofter we want to read direction, -1 to disable reading direction
-  
-  uint16_t wind_log_store_len;   // how many wind data we can store, to be send on the next interaction 
+  uint8_t  as5600_pwr_on_time_ms;   // ms to wait after power on before reading (also an interrupt cycle)
+  uint16_t as5600_read_interval_s;  // seconds between direction reads (0 disables)
 
-  float  vbat_calib;             // calibration for converting the measured voltage on vbat to the actual voltage
-  float  vsolar_calib;           // calibration for converting the measured voltage on vsolar to the actual voltage
+  uint16_t wind_log_store_len;      // how many wind data we can store, to be send on the next interaction 
+
+  float  vbat_calib;                // calibration for converting the measured voltage on vbat to the actual voltage
+  float  vsolar_calib;              // calibration for converting the measured voltage on vsolar to the actual voltage
 };
 
 // define default preferences:
 AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
-  /*version*/                   "v8",
+  /*version*/                   "v8.1",
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
 
-  /*light_sleep_enabled*/       1,
+  /*light_sleep_enabled*/       1, 
   /*sleep_enabled*/             2,
-  /*sleep_hour_start*/          18,
-  /*sleep_hour_end*/            7,
+  /*sleep_2_send_interval_s*/   20, 
+  /*sleep_hour_start*/          18,     // time hours
+  /*sleep_hour_end*/            6,      // time hours
 
-  /*store_wind_data_interval*/  5,
-  /*send_data_interval*/        2,
-  /*n_send_retries*/            5,
+  /*store_wind_data_interval_s*/  5,     
+  /*send_data_interval_min*/      2,    
+  /*n_send_retries*/              5,
 
-  /*at_timeout_s*/              10,
-  /*sim_timeout_s*/             20,
-  /*csq_timeout_s*/             120,
-  /*creg_timeout_s*/            120,
-  /*cgreg_timeout_s*/           120,
+  /*at_timeout_s*/              10,     
+  /*sim_timeout_s*/             20,     
+  /*csq_timeout_s*/             120,    
+  /*creg_timeout_s*/            120,    
+  /*cgreg_timeout_s*/           120,    
 
-  /*error_led_on_time*/         10,
-  /*dir_led_on_time*/           10,
-  /*spin_led_on_time*/          20,
-  /*blink_led_on_time*/         20,
-  /*blink_led_interval*/        20,  
+  /*error_led_on_time_ms*/      10,  
+  /*dir_led_on_time_ms*/        10,  
+  /*spin_led_on_time_ms*/       20,  
+  /*blink_led_on_time_ms*/      20,  
+  /*blink_led_interval_ds*/     20,  // deciseconds (0.1 s)
 
-  /*as5600_pwr_on_time*/        100,
-  /*as5600_read_interval*/      3,
+  /*as5600_pwr_on_time_ms*/       100, 
+  /*as5600_read_interval_s*/      0,    
 
-  /*wind_log_store_len*/        600,
+  /*wind_log_store_len*/        600,    
 
-  /*vbat_calib*/                0.0006598,
+  /*vbat_calib*/                0.0006598, 
   /*vsolar_calib*/              0.003532
 };
 
@@ -250,7 +252,7 @@ void tap(Button2& btn);
 void tap2(Button2& btn);
 
 #define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
-//#define DEEP_SLEEP_DURATION  20 * 1000 * 1000  // 20 seconds
+//#define DEEP_SLEEP_DURATION  5*60 * 1000 * 1000  // 20 seconds
 RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
 
 void printVersionAndCompileDate() {
@@ -413,14 +415,15 @@ void printPreferences() {
   Serial_print("  url_errors: ");  Serial_println(prefs.url_errors);
   Serial_println();
 
-  Serial_print("  light_sleep_enabled: ");  Serial_println(prefs.light_sleep_enabled);
-  Serial_print("  sleep_enabled:       ");  Serial_println(prefs.sleep_enabled);
-  Serial_print("  sleep_hour_start:    ");  Serial_println(prefs.sleep_hour_start);
-  Serial_print("  sleep_hour_end:      ");  Serial_println(prefs.sleep_hour_end);
+  Serial_print("  light_sleep_enabled:   ");  Serial_println(prefs.light_sleep_enabled);
+  Serial_print("  sleep_enabled:         ");  Serial_println(prefs.sleep_enabled);
+  Serial_print("  sleep_2_send_interval_s: ");  Serial_println(prefs.sleep_2_send_interval_s);
+  Serial_print("  sleep_hour_start:      ");  Serial_println(prefs.sleep_hour_start);
+  Serial_print("  sleep_hour_end:        ");  Serial_println(prefs.sleep_hour_end);
   Serial_println();
 
-  Serial_print("  store_wind_data_interval: "); Serial_println(prefs.store_wind_data_interval);
-  Serial_print("  send_data_interval:       ");       Serial_println(prefs.send_data_interval);
+  Serial_print("  store_wind_data_interval_s: "); Serial_println(prefs.store_wind_data_interval_s);
+  Serial_print("  send_data_interval_min:       ");       Serial_println(prefs.send_data_interval_min);
   Serial_print("  n_send_retries:           ");       Serial_println(prefs.n_send_retries);
   Serial_println();
 
@@ -431,15 +434,15 @@ void printPreferences() {
   Serial_print("  cgreg_timeout_s: ");       Serial_println(prefs.cgreg_timeout_s);
   Serial_println();  
 
-  Serial_print("  error_led_on_time:  ");   Serial_println(prefs.error_led_on_time);
-  Serial_print("  dir_led_on_time:    ");     Serial_println(prefs.dir_led_on_time);
-  Serial_print("  spin_led_on_time:   ");    Serial_println(prefs.spin_led_on_time);
-  Serial_print("  blink_led_on_time:  ");   Serial_println(prefs.blink_led_on_time);
-  Serial_print("  blink_led_interval: ");  Serial_println(prefs.blink_led_interval);
+  Serial_print("  error_led_on_time_ms:  ");   Serial_println(prefs.error_led_on_time_ms);
+  Serial_print("  dir_led_on_time_ms:    ");     Serial_println(prefs.dir_led_on_time_ms);
+  Serial_print("  spin_led_on_time_ms:   ");    Serial_println(prefs.spin_led_on_time_ms);
+  Serial_print("  blink_led_on_time_ms:  ");   Serial_println(prefs.blink_led_on_time_ms);
+  Serial_print("  blink_led_interval_ds: ");  Serial_println(prefs.blink_led_interval_ds);
   Serial_println();
 
-  Serial_print("  as5600_pwr_on_time:   "); Serial_println(prefs.as5600_pwr_on_time);
-  Serial_print("  as5600_read_interval: "); Serial_println(prefs.as5600_read_interval);
+  Serial_print("  as5600_pwr_on_time_ms:   "); Serial_println(prefs.as5600_pwr_on_time_ms);
+  Serial_print("  as5600_read_interval_s: "); Serial_println(prefs.as5600_read_interval_s);
   Serial_println();
 
   Serial_print("  wind_log_store_len:   "); Serial_println(prefs.wind_log_store_len);
@@ -618,8 +621,10 @@ void setup() {
     .name = "hal_timer"
   };
   esp_timer_handle_t hal_timer;
-  esp_timer_create(&hal_timer_args, &hal_timer);
-  esp_timer_start_periodic(hal_timer, 4*1000);  // every 4 ms
+  if(prefs.store_wind_data_interval_s > 0) {
+    esp_timer_create(&hal_timer_args, &hal_timer);
+    esp_timer_start_periodic(hal_timer, 4*1000);  // every 4 ms
+  }
 
   esp_timer_handle_t blinkLed_timer;
   const esp_timer_create_args_t blinkLed_args = {
@@ -628,9 +633,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "blinkLed_timer"
   };
-  esp_timer_create(&blinkLed_args, &blinkLed_timer);
-  if(prefs.blink_led_on_time > 0) {
-    esp_timer_start_periodic(blinkLed_timer, prefs.blink_led_on_time * 1000); 
+  if(prefs.blink_led_on_time_ms > 0) {
+    esp_timer_create(&blinkLed_args, &blinkLed_timer);
+    esp_timer_start_periodic(blinkLed_timer, prefs.blink_led_on_time_ms * 1000); 
   }
 
   esp_timer_handle_t spinLed_timer;
@@ -640,9 +645,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "spinLed_timer"
   };
-  esp_timer_create(&spinLed_args, &spinLed_timer);
-  if(prefs.spin_led_on_time > 0) {
-    esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time * 1000); 
+  if(prefs.spin_led_on_time_ms > 0) {
+    esp_timer_create(&spinLed_args, &spinLed_timer);
+    esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time_ms * 1000); 
   }
 
   esp_timer_handle_t dirLed_timer;
@@ -652,9 +657,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "dirLed_timer"
   };
-  esp_timer_create(&dirLed_args, &dirLed_timer);
-  if(prefs.dir_led_on_time > 0) {
-    esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time * 1000);  
+  if(prefs.dir_led_on_time_ms > 0) {
+    esp_timer_create(&dirLed_args, &dirLed_timer);
+    esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time_ms * 1000);  
   }
 
   esp_timer_handle_t errorLed_timer;
@@ -664,9 +669,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "errorLed_timer"
   };
-  esp_timer_create(&errorLed_args, &errorLed_timer);
-  if(prefs.error_led_on_time > 0) {
-    esp_timer_start_periodic(errorLed_timer, prefs.error_led_on_time * 1000); 
+  if(prefs.error_led_on_time_ms > 0) {
+    esp_timer_create(&errorLed_args, &errorLed_timer);
+    esp_timer_start_periodic(errorLed_timer, prefs.error_led_on_time_ms * 1000); 
   }
   
 
@@ -677,8 +682,10 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "readSpeed_timer"
   };
-  esp_timer_create(&readSpeed_args, &readSpeed_timer);
-  esp_timer_start_periodic(readSpeed_timer, 1000 * 1000); // 1s
+  if(prefs.store_wind_data_interval_s > 0) {
+    esp_timer_create(&readSpeed_args, &readSpeed_timer);
+    esp_timer_start_periodic(readSpeed_timer, 1000 * 1000); // 1s
+  }
 
   esp_timer_handle_t readDirection_timer;
   const esp_timer_create_args_t readDirection_args = {
@@ -687,9 +694,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "readDirection_timer"
   };
-  esp_timer_create(&readDirection_args, &readDirection_timer);
-  if(prefs.as5600_read_interval > 0) { 
-    esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time*1000); 
+  if(prefs.as5600_read_interval_s > 0) { 
+    esp_timer_create(&readDirection_args, &readDirection_timer);
+    esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time_ms*1000); 
   }
   
 
@@ -700,10 +707,12 @@ void setup() {
       .dispatch_method = ESP_TIMER_TASK,
       .name = "storeWindData_timer"
   };
-  esp_timer_create(&storeWindData_args, &storeWindData_timer);
-  esp_timer_start_periodic(storeWindData_timer, prefs.store_wind_data_interval*1000*1000); // X seconds (in microseconds)
+  if(prefs.store_wind_data_interval_s > 0) {
+    esp_timer_create(&storeWindData_args, &storeWindData_timer);
+    esp_timer_start_periodic(storeWindData_timer, prefs.store_wind_data_interval_s*1000*1000ULL); // X seconds (in microseconds)
+  }
 
-  Serial_println("Done init!");   
+  Serial_println("Done init!");
 }
 
 bool readSensorTempHum_inside(float &tempC, float &humRH) {
@@ -778,7 +787,7 @@ void IRAM_ATTR onBlinkLed(void* arg) {
   static int nOnBlinkLedcalls = 0;
   nOnBlinkLedcalls ++;
 
-  uint16_t toggleCount = prefs.blink_led_interval*100 / prefs.blink_led_on_time;
+  uint16_t toggleCount = prefs.blink_led_interval_ds*100 / prefs.blink_led_on_time_ms;
   if(nOnBlinkLedcalls % toggleCount == 0) {
     digitalWrite(BLINK_LED_PIN, HIGH);    
     //Serial_print("on");
@@ -868,7 +877,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
   #define MAGNET_READ_REPEATS 4
   int8_t readRepeats;
 
-  uint16_t ir_cycles = (prefs.as5600_read_interval*1000 / prefs.as5600_pwr_on_time);
+  uint16_t ir_cycles = (prefs.as5600_read_interval_s*1000 / prefs.as5600_pwr_on_time_ms);
 
   //Serial.flush();
   if(directionReadCount == 1) {
@@ -1045,7 +1054,7 @@ void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
     if (w_count < prefs.wind_log_store_len) {
         w_count++;
     } else{
-      first_timestamp += prefs.store_wind_data_interval; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
+      first_timestamp += prefs.store_wind_data_interval_s; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
       // buffer full -> oldest is implicitly dropped
       elog.logTmp(ErrorLogger::ERR_WIND_BUF_OVERWRITE);
     }
@@ -1183,6 +1192,10 @@ bool isSleepHour(int start, int end, int hour) {
 bool isDeepSleepTime() {
   if(prefs.sleep_enabled == 0) return false; // dont do anything if it is disabled 
   if(prefs.sleep_enabled == 2 && hasSendAfterTurnOn == false) return false; // we dont go to sleep if we dont try sending first // if sleep mode 2 (sends once after sleeping) and if there is no send after turn on meaning it hasnt tried sending yet dont go to deep sleep until the send it at least once 
+  return isSleepTime();
+}
+
+bool isSleepTime() {
   if(!accurateTimeSet) return false; // the time was not set from the GMS module yet
 
   if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
@@ -1207,6 +1220,30 @@ void evaluateIfDeepSleep() {
   if(isDeepSleepTime()) goToDeepSleep();
 }
 
+bool isTimeToSendData(uint32_t secSinceLastSend) {
+  if(prefs.sleep_enabled == 2 && isSleepTime()) {
+      // if the sleep mode 2 is on and we are currently in the time when we should be sleeping then we check the 
+      // sleep2 send interval instead of the usal send_data interval :) 
+      return secSinceLastSend > prefs.sleep_2_send_interval_s;
+  } else {
+    // normal case when the devices is on and sending data 
+    return secSinceLastSend > prefs.send_data_interval_min*60;
+  }
+}
+
+bool isLightSleep() {
+  if(prefs.light_sleep_enabled == 1) return true;  // default state, sleep enabled
+  if(prefs.light_sleep_enabled == 0) return false; // sleep disabled 
+  
+  if(prefs.light_sleep_enabled == 2) {
+    // special debug case where the sleep is disabled in frist 2 seconds 
+    bool enoughTimePassed = millis() > 1*60*1000; 
+    return enoughTimePassed;
+  }
+
+  return true; // undefined state presumes light sleep is enabled
+}
+
 FloatRunningAverage<32> vBattAvg(read_batt_v);
 FloatRunningAverage<8> vSolarAvg(read_solar_v);
 
@@ -1228,9 +1265,10 @@ void loop() {
     printDiagnosticInfo();
   }*/
 
-  if(millis() - lastSend > prefs.send_data_interval*60*1000) {
+  uint32_t secSinceLastSend = (millis() - lastSend)/1000;
+  if(isTimeToSendData(secSinceLastSend)) {
     lastSend = millis();
-    Serial_println(String(prefs.send_data_interval) + " min passed doing send");
+    Serial_println(String(secSinceLastSend) + " s passed doing send");
     fullCycleSend();
   }
 
@@ -1254,11 +1292,17 @@ void loop() {
 
   //updateSerial();
 
-  bool enoughTimePassed = millis() > 1*60*1000; // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
-  if(enoughTimePassed && prefs.light_sleep_enabled) {
+  if(prefs.light_sleep_enabled == 1) {
     esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
   } else {
-    delay(1);
+    // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
+    
+  }
+
+  if(isLightSleep()){
+    esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start();
+  } else {
+    delay(2);
   }
 }
 
@@ -1739,23 +1783,23 @@ bool saveNewPrefValue(String key, String value) {
   else if(key == "url_errors") {
     value.toCharArray(prefs.url_errors, sizeof(prefs.url_errors));
   }
-  else if(key == "store_wind_data_interval") {
-    prefs.store_wind_data_interval = value.toInt();
+  else if(key == "store_wind_data_interval_s") {
+    prefs.store_wind_data_interval_s = value.toInt();
   }
-  else if(key == "error_led_on_time") {
-    prefs.error_led_on_time = value.toInt();
+  else if(key == "error_led_on_time_ms") {
+    prefs.error_led_on_time_ms = value.toInt();
   }
-  else if(key == "dir_led_on_time") {
-    prefs.dir_led_on_time = value.toInt();
+  else if(key == "dir_led_on_time_ms") {
+    prefs.dir_led_on_time_ms = value.toInt();
   }
-  else if(key == "spin_led_on_time") {
-    prefs.spin_led_on_time = value.toInt();
+  else if(key == "spin_led_on_time_ms") {
+    prefs.spin_led_on_time_ms = value.toInt();
   }
-  else if(key == "as5600_pwr_on_time") {
-    prefs.as5600_pwr_on_time = value.toInt();
+  else if(key == "as5600_pwr_on_time_ms") {
+    prefs.as5600_pwr_on_time_ms = value.toInt();
   }
-  else if(key == "as5600_read_interval") {
-    prefs.as5600_read_interval = value.toInt();
+  else if(key == "as5600_read_interval_s") {
+    prefs.as5600_read_interval_s = value.toInt();
   }
   else if(key == "light_sleep_enabled") {
     prefs.light_sleep_enabled = value.toInt();
@@ -1763,20 +1807,23 @@ bool saveNewPrefValue(String key, String value) {
   else if(key == "sleep_enabled") {
     prefs.sleep_enabled = value.toInt();
   } 
+  else if(key == "sleep_2_send_interval_s") {
+    prefs.sleep_2_send_interval_s = value.toInt();
+  }
   else if(key == "sleep_hour_start") {
     prefs.sleep_hour_start = value.toInt();
   } 
   else if(key == "sleep_hour_end") {
     prefs.sleep_hour_end = value.toInt();
   }
-  else if(key == "blink_led_on_time") {
-    prefs.blink_led_on_time = value.toInt();
+  else if(key == "blink_led_on_time_ms") {
+    prefs.blink_led_on_time_ms = value.toInt();
   } 
-  else if(key == "blink_led_interval") {
-    prefs.blink_led_interval = value.toInt();
+  else if(key == "blink_led_interval_ds") {
+    prefs.blink_led_interval_ds = value.toInt();
   }
-  else if(key == "send_data_interval") {
-    prefs.send_data_interval = value.toInt();
+  else if(key == "send_data_interval_min") {
+    prefs.send_data_interval_min = value.toInt();
   }
   else if(key == "n_send_retries") {
     prefs.n_send_retries = value.toInt();
@@ -2045,11 +2092,12 @@ String getPostBodyPrefs() {
 
   body += "light_sleep_enabled=" + String(prefs.light_sleep_enabled) + ";";
   body += "sleep_enabled=" + String(prefs.sleep_enabled) + ";";
+  body += "sleep_2_send_interval_s=" + String(prefs.sleep_2_send_interval_s) + ";";
   body += "sleep_hour_start=" + String(prefs.sleep_hour_start) + ";";
   body += "sleep_hour_end=" + String(prefs.sleep_hour_end) + ";";
 
-  body += "store_wind_data_interval=" + String(prefs.store_wind_data_interval) + ";";
-  body += "send_data_interval=" + String(prefs.send_data_interval) + ";";
+  body += "store_wind_data_interval_s=" + String(prefs.store_wind_data_interval_s) + ";";
+  body += "send_data_interval_min=" + String(prefs.send_data_interval_min) + ";";
   body += "n_send_retries=" + String(prefs.n_send_retries) + ";";
 
   body += "at_timeout_s=" + String(prefs.at_timeout_s) + ";";
@@ -2058,14 +2106,14 @@ String getPostBodyPrefs() {
   body += "creg_timeout_s=" + String(prefs.creg_timeout_s) + ";";
   body += "cgreg_timeout_s=" + String(prefs.cgreg_timeout_s) + ";";
 
-  body += "error_led_on_time=" + String(prefs.error_led_on_time) + ";";
-  body += "dir_led_on_time=" + String(prefs.dir_led_on_time) + ";";
-  body += "spin_led_on_time=" + String(prefs.spin_led_on_time) + ";";
-  body += "blink_led_on_time=" + String(prefs.blink_led_on_time) + ";";
-  body += "blink_led_interval=" + String(prefs.blink_led_interval) + ";";
+  body += "error_led_on_time_ms=" + String(prefs.error_led_on_time_ms) + ";";
+  body += "dir_led_on_time_ms=" + String(prefs.dir_led_on_time_ms) + ";";
+  body += "spin_led_on_time_ms=" + String(prefs.spin_led_on_time_ms) + ";";
+  body += "blink_led_on_time_ms=" + String(prefs.blink_led_on_time_ms) + ";";
+  body += "blink_led_interval_ds=" + String(prefs.blink_led_interval_ds) + ";";
 
-  body += "as5600_pwr_on_time=" + String(prefs.as5600_pwr_on_time) + ";";
-  body += "as5600_read_interval=" + String(prefs.as5600_read_interval) + ";";
+  body += "as5600_pwr_on_time_ms=" + String(prefs.as5600_pwr_on_time_ms) + ";";
+  body += "as5600_read_interval_s=" + String(prefs.as5600_read_interval_s) + ";";
 
   body += "wind_log_store_len=" + String(prefs.wind_log_store_len) + ";";
 
@@ -2339,7 +2387,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
 
 
 

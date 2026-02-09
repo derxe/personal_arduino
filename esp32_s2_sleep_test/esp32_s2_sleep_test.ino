@@ -1,20 +1,71 @@
 #include <Arduino.h>
 #include <esp_sleep.h>
+#include "Button2.h"
 
-#define LED_PIN 15
+#define LED_BUILTIN 15
 
-// Lives in RTC fast memory; survives deep sleep resets.
-RTC_DATA_ATTR bool led_on = false;
+Button2 button;
 
-void setup() {
-  setCpuFrequencyMhz(10);
-  
-  // Sleep for 1 second
-  esp_sleep_enable_timer_wakeup(10*1000000ULL);
-  esp_deep_sleep_start();
+void blink_led(int duration=200) {
+  digitalWrite(LED_BUILTIN, HIGH); delay(duration); digitalWrite(LED_BUILTIN, LOW); delay(duration);
 }
 
-void loop() {} // never reached
+/*
+void cliky(Button2& btn) {
+  blink_led(); 
+  blink_led();
+
+  esp_sleep_enable_timer_wakeup(5 * 1000 * 1000ULL);
+  esp_light_sleep_start();
+}
+*/
+
+void cliky(Button2& btn) {
+  blink_led(); 
+  blink_led(); 
+  blink_led(); 
+  blink_led(); 
+
+  esp_sleep_enable_timer_wakeup(5*1000*1000ULL); // 5 seconds
+  esp_deep_sleep_start();
+
+}
+
+
+void setup() {
+  setCpuFrequencyMhz(80);
+
+  button.begin(0);
+  button.setTapHandler(cliky);
+//  button.setLongClickHandler(lng);
+
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  blink_led(); 
+  blink_led(); 
+  blink_led(); 
+
+  for(int i=0; i<1000; i++) {
+    esp_sleep_enable_timer_wakeup(4 * 1000ULL);
+    esp_light_sleep_start();
+  }
+
+}
+
+
+void loop() {
+  button.loop();
+
+  static uint32_t lastTimeBlink = 0;
+  uint32_t now = millis();
+
+  if (now - lastTimeBlink >= 1000) {
+      lastTimeBlink = now;
+      blink_led(20);
+  }
+
+
+} // never reached
 
 /*
 #include <Arduino.h>

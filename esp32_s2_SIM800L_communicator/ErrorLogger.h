@@ -24,13 +24,14 @@ public:
         ERR_SEND_ERRORS_HTTP_FAIL        = 15,
         ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE = 16,
 
-        // ---- DIR / I2C ----
+        // ---- direction wind vane ----
         ERR_DIR_READ             = 20,
         ERR_DIR_READ_ONCE        = 21,
         ERR_DIR_NOT_CONNECTED    = 22,
         ERR_DIR_SHORT_BUF_FULL   = 23,
         ERR_DIR_SDA_NOT_CONN     = 24,
         ERR_DIR_SCL_NOT_CONN     = 25,
+        ERR_DIR_MAG_WEAK         = 26,
 
         // ---- WIND ----
         ERR_WIND_BUF_OVERWRITE   = 30,
@@ -80,6 +81,7 @@ public:
             //Serial_print("count: "); Serial_println(test);
             //Serial_print("err count: "); Serial_println(_errorCounts[code]);
         }
+        nErrorsLogged ++;
     }
 
     void logTmp(ErrorCode code) {
@@ -87,6 +89,7 @@ public:
             _errorCountsTemp[code]++;
             //Serial_print("Log error tmp: "); Serial_println(code);
         }
+        nErrorsLogged ++;
     }
 
     // --- Get number of times an error occurred ---
@@ -131,6 +134,10 @@ public:
             }
         }
         return out;
+    }
+
+    int getNErrorsLogged() {
+        return nErrorsLogged;
     }
 
     // --- Clear a specific error counter (and in Preferences) ---
@@ -201,6 +208,8 @@ public:
                 return "Direction sensor SDA not connected";
             case ERR_DIR_SCL_NOT_CONN:
                 return "Direction sensor SCL not connected";
+            case ERR_DIR_MAG_WEAK:
+                return "Magnet too weak";
 
             // ---- WIND ----
             case ERR_WIND_BUF_OVERWRITE:
@@ -237,6 +246,7 @@ public:
 
 private:
     static constexpr int ERROR_COUNT = ERR_COUNT_MAX;
+    int nErrorsLogged = 0;
     uint16_t _errorCounts[ERROR_COUNT];
     uint16_t _errorCountsTemp[ERROR_COUNT];
     Preferences _prefs;

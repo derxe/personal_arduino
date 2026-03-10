@@ -16,7 +16,8 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX_PIN, UART_DEBUG_RX_PIN);
 #include "esp_timer.h"
 #include "AS5600.h"
 #include <Wire.h>
-#include <TimeLib.h>
+#include <time.h>
+#include <sys/time.h>
 #include <Preferences.h>
 #include "ErrorLogger.h"
 #include "ResetDiagnostics.h"
@@ -46,6 +47,7 @@ struct AppPrefs {
 
   uint8_t  light_sleep_enabled;        // light sleep between reads, 0 if disabled, and 1 if enabled and 2 if enabled only after 1 min after boot 
   uint8_t  sleep_enabled;              // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
+  uint16_t sleep_dur_min;              // how long to go to sleep for each deep sleep 
   uint16_t sleep_2_send_interval_s;    // seconds to collect data before sending in sleep mode 2 
   int8_t   sleep_hour_start;           // which hour the device gets to sleep in 24 hour format 
   int8_t   sleep_hour_end;             // which hour the device is expected to wake up again
@@ -80,15 +82,16 @@ AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
   /*load_def_prefs*/            0,      // should be always 0 unless we want to use default preferences every reset
-  /*version*/                   "v9",
+  /*version*/                   "v10",
 
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
   /*url_stream*/                "http://46.224.24.144/veter/stream/",
 
-  /*light_sleep_enabled*/       2, 
+  /*light_sleep_enabled*/       1, 
   /*sleep_enabled*/             0,
+  /*sleep_dur_min*/             60,
   /*sleep_2_send_interval_s*/   20, 
   /*sleep_hour_start*/          18,     // time hours
   /*sleep_hour_end*/            6,      // time hours
@@ -110,7 +113,7 @@ AppPrefs prefs = {
   /*blink_led_interval_ds*/     20,  // deciseconds (0.1 s)
 
   /*as5600_pwr_on_time_ms*/     100, 
-  /*as5600_read_interval_s*/    1,    
+  /*as5600_read_interval_s*/    3,    
 
   /*wind_log_store_len*/        600,    
 
@@ -141,6 +144,11 @@ enum class SendResult : int {
 #define TX_PIN 39
 //SoftwareSerial SerialAT(TX_PIN, RX_PIN);  // SIM800L <-> Arduino
 #define SerialAT Serial1
+
+// watchdog pins 
+#define WAKE_PIN       6
+#define DONE_PIN       10
+#define DONE_PULSE_MS  5
 
 #define BUTTON_0_PIN     0
 #define BUTTON_PIN       9
@@ -254,6 +262,7 @@ void IRAM_ATTR onSpinLed(void* arg);
 void IRAM_ATTR onDirLed(void* arg);
 void IRAM_ATTR onErrorLed(void* arg);
 void IRAM_ATTR onStoreWindData(void* arg);
+void IRAM_ATTR onResetWatchdogTimer(void* arg);
 
 void tap0(Button2& btn);
 void tap(Button2& btn);
@@ -262,7 +271,7 @@ void longClick2(Button2& btn);
 
 #define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
 //#define DEEP_SLEEP_DURATION  5*60 * 1000 * 1000  // 20 seconds
-RTC_DATA_ATTR time_t timeBeforeSleep = 0;      // stores last time before deep sleep
+RTC_DATA_ATTR time_t sleepUntil = 0;      // stores how long do we want to sleep for so we know if we have to continue sleeping when waking up  
 
 void printVersionAndCompileDate() {
   Serial_print("Compiled on ");
@@ -404,8 +413,7 @@ void loadPreferences() {
     prefs = prefsLoaded;
   }
   
-
-  printPreferences();
+  //printPreferences();
 
   store.end();
 }
@@ -438,6 +446,7 @@ void printPreferences() {
 
   Serial_print("  light_sleep_enabled:     ");  Serial_println(prefs.light_sleep_enabled);
   Serial_print("  sleep_enabled:           ");  Serial_println(prefs.sleep_enabled);
+  Serial_print("  sleep_dur_min:           ");  Serial_println(prefs.sleep_dur_min);
   Serial_print("  sleep_2_send_interval_s: ");  Serial_println(prefs.sleep_2_send_interval_s);
   Serial_print("  sleep_hour_start:        ");  Serial_println(prefs.sleep_hour_start);
   Serial_print("  sleep_hour_end:          ");  Serial_println(prefs.sleep_hour_end);
@@ -517,9 +526,71 @@ bool accurateTimeSet = false;
 bool hasSendAfterTurnOn = false; 
 
 
+// gets called each 5 seconds and resets the external watchdog timer
+void IRAM_ATTR onResetWatchdogTimer(void* arg) {
+  reset_watchdog_timer();
+}
+
+static void reset_watchdog_timer() {
+  digitalWrite(DONE_PIN, HIGH);
+  delay(DONE_PULSE_MS);
+  digitalWrite(DONE_PIN, LOW);
+}
+
+static int64_t now_rtc_s() {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec;
+}
+
+static void set_system_time_unix(time_t t) {
+  struct timeval tv = {.tv_sec = t, .tv_usec = 0};
+  settimeofday(&tv, nullptr);
+}
+
+static void set_system_time_ymdhms(int y, int mon, int d, int h, int min, int s) {
+  struct tm tmv = {};
+  tmv.tm_year = y - 1900;
+  tmv.tm_mon = mon - 1;
+  tmv.tm_mday = d;
+  tmv.tm_hour = h;
+  tmv.tm_min = min;
+  tmv.tm_sec = s;
+  time_t t = mktime(&tmv);
+  if (t > 0) set_system_time_unix(t);
+}
+
+static bool get_current_tm(struct tm &out) {
+  time_t now_s = (time_t)now_rtc_s();
+  if (now_s <= 0) return false;
+  gmtime_r(&now_s, &out);
+  return true;
+}
+
+static int current_hour() {
+  struct tm tmv;
+  if (!get_current_tm(tmv)) return 0;
+  return tmv.tm_hour;
+}
+
+static int current_minute() {
+  struct tm tmv;
+  if (!get_current_tm(tmv)) return 0;
+  return tmv.tm_min;
+}
+
+static int current_second() {
+  struct tm tmv;
+  if (!get_current_tm(tmv)) return 0;
+  return tmv.tm_sec;
+}
+
 void setup() {
   pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
   delay(500);
+
+  pinMode(DONE_PIN, OUTPUT);
+  reset_watchdog_timer(); // reset watchdog timer
 
   hasSendAfterTurnOn = false;
 
@@ -562,7 +633,6 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   //Serial.begin(115200);
-  setTime(15, 0, 0, 29, 9, 2025);
 
   SerialDBG.begin(115200);
 
@@ -584,13 +654,22 @@ void setup() {
   // TODO also log which part of the program was in when the reset happened to debug where it crashed
 
 
-  if(timeBeforeSleep == 0) {
-    Serial_println("Fresh start. Normal boot");
+  if(sleepUntil == 0) {
+    Serial_println("Fresh start. Not from sleep.");
   } else {
     // timeWas set before sleep so we can check if is time to wake up already!
-    setTime(timeBeforeSleep + DEEP_SLEEP_DURATION / 1000000);
+    int64_t now_s = now_rtc_s();
+    set_system_time_unix((time_t)now_s);
     accurateTimeSet = true;
     Serial_print("Woke up from deep sleep. Current time:"); Serial_println(getFormattedTimeLibString());
+    Serial_print("We need to sleep until: "); Serial_println(getFormattedUnixTime(sleepUntil));
+    
+    int64_t secSleepRemaining = sleepUntil - now_s;
+    if(secSleepRemaining > 0) {
+      Serial_print("we need to go back to sleep for: " + String(secSleepRemaining/60) + " min");
+      goToDeepSleep(secSleepRemaining / 60);
+    }
+    
     evaluateIfDeepSleep();
   }
 
@@ -737,8 +816,20 @@ void setup() {
     esp_timer_start_periodic(storeWindData_timer, prefs.store_wind_data_interval_s*1000*1000ULL); // X seconds (in microseconds)
   }
 
+  esp_timer_handle_t watchdogReset_timer;
+  const esp_timer_create_args_t watchdogReset_args = {
+      .callback = &onResetWatchdogTimer,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "watchdogReset_timer"
+  };
+  esp_timer_create(&watchdogReset_args, &watchdogReset_timer);
+  esp_timer_start_periodic(watchdogReset_timer, 30 * 1000 * 1000ULL);
+
   Serial_println("Done init!");
-  digitalWrite(BLINK_LED_PIN, LOW); 
+  digitalWrite(BLINK_LED_PIN, LOW);
+
+  reset_watchdog_timer();
 }
 
 bool readSensorTempHum_inside(float &tempC, float &humRH) {
@@ -797,7 +888,7 @@ uint32_t get_log_timestamp(int hour, int minute, int second) {
 }
 
 uint32_t get_log_timestamp() {
-  return get_log_timestamp(hour(), minute(), second());
+  return get_log_timestamp(current_hour(), current_minute(), current_second());
 }
 
 //#define PRINT_MAGNET_READ_DEBUG
@@ -914,7 +1005,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
     digitalWrite(AS600_POWER_PIN, HIGH);
 
     if(!checkAS5600Connected()) {
-      Serial_println("Dir sensor not conn");
+      //Serial_println("Dir sensor not conn");
       elog.logTmp(ErrorLogger::ERR_DIR_NOT_CONNECTED);
       directionReadCount = 3; // skip the next step where the magnet is actually read
       digitalWrite(AS600_POWER_PIN, LOW); // the sensor is not connected so turn it off again
@@ -1234,29 +1325,47 @@ bool isDeepSleepTime() {
   return isSleepTime();
 }
 
+
 bool isSleepTime() {
   if(!accurateTimeSet) return false; // the time was not set from the GMS module yet
 
-  if(timeStatus() == timeNotSet) return false; // how can we sleep if we dont know what the time is!
-
   //Serial_print("sleep?"); Serial_println(isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour()));
   // we sleep at night ofcorse! from 8 PM to 6 AM
-  return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, hour());
+  return isSleepHour(prefs.sleep_hour_start, prefs.sleep_hour_end, current_hour());
 }
 
-void goToDeepSleep() {
+void goToDeepSleep(uint64_t duration_min) {
     Serial_print("Current time is:"); Serial_println(getFormattedTimeLibString());
-    Serial_print("It is time to go deep sleep for: "); Serial_print(DEEP_SLEEP_DURATION/(1000000*60)); 
-    Serial_print(" minutes!");
+    Serial_print("It is time to go deep sleep for: "); Serial_print(duration_min);  Serial_println(" minutes!");
     delay(500); // delay for all the Serial_prints to finish 
 
-    timeBeforeSleep = now();
-    esp_sleep_enable_timer_wakeup(DEEP_SLEEP_DURATION);
+    sleepUntil = (time_t)(now_rtc_s() + (int64_t)duration_min * 60);
+    Serial_print("Scheduled wake up time is:"); Serial_println(getFormattedUnixTime(sleepUntil));
+
+    esp_sleep_enable_timer_wakeup(duration_min * 60 * 1000000);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_PIN, 1);  
+
+    delay(100); // wait for all the logs to print
     esp_deep_sleep_start();  // after this, it won't return here — will restart from setup()
 }
 
+int calcMinUntilWake() {
+  int currentTimeInMin = current_hour() * 60 + current_minute();
+  int sleepEndInMin = prefs.sleep_hour_end * 60;
+  int minUntilWake = (sleepEndInMin - currentTimeInMin + 24 * 60) % (24 * 60);
+  return minUntilWake;
+}
+
 void evaluateIfDeepSleep() {
-  if(isDeepSleepTime()) goToDeepSleep();
+  if (!isDeepSleepTime()) return;
+
+  int minUntilWake = calcMinUntilWake();
+  if (minUntilWake == 0) return;           // already at wake time (HH:00)
+
+  int sleepDurationMin = min((int) prefs.sleep_dur_min, minUntilWake);
+
+  if (sleepDurationMin <= 0) return;       // safety
+  goToDeepSleep(sleepDurationMin);
 }
 
 bool isTimeToSendData(uint32_t secSinceLastSend) {
@@ -1578,7 +1687,7 @@ bool updateSerial() {
   return true;
 }
 
-#define PRINT_SIM_COMM
+//#define PRINT_SIM_COMM
 
 #ifdef PRINT_SIM_COMM
   #define DBG_CMD(...) do { __VA_ARGS__; } while (0)
@@ -1686,19 +1795,24 @@ bool parseCGREGResponse(const String& response) {
 }
 
 String getFormattedTimeLibString() {
+  struct tm tmv;
+  if (!get_current_tm(tmv)) return "1970-01-01 00:00:00";
   char buf[24];
   snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-           year(), month(), day(), hour(), minute(), second());
+           tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+           tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
   return String(buf);
 }
 
 String getFormattedUnixTime(uint32_t unix_time) {
-    tmElements_t tm;
-    breakTime(unix_time, tm);  // fill 'tm' with the date/time fields
+    time_t t = (time_t)unix_time;
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
 
     char buf[24];
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d_%02d:%02d:%02d", // we print with _ because this function is used in post body
-             tm.Year + 1970, tm.Month, tm.Day, tm.Hour, tm.Minute, tm.Second);
+             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+             tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
 
     return String(buf);
 }
@@ -1706,21 +1820,48 @@ String getFormattedUnixTime(uint32_t unix_time) {
 String imsiNum; 
 
 bool parseCIMIResponse(const String& response) {
-  int idx;
-  idx = response.indexOf("AT+CIMI"); if (idx == -1) return false;
-  idx = response.indexOf("OK"); if (idx == -1) return false;
+  int cmd = response.indexOf("AT+CIMI");
+  if (cmd == -1) return false;
 
-  String digits = "";
-  for (int i = 0; i < response.length(); i++) {
-    if (isDigit(response[i])) digits += response[i];
-  }  
+  int ok = response.indexOf("\nOK", cmd);
+  if (ok == -1) ok = response.indexOf("\r\nOK", cmd);
+  if (ok == -1) return false;
 
-  if (digits.length() < 10) return false;  // sanity check
-  
-  imsiNum = digits;
-  return true;
+  // Work only inside the CIMI block
+  String block = response.substring(cmd, ok);
+
+  // Split into lines, find the first line that looks like an IMSI
+  int start = 0;
+  while (start < block.length()) {
+    int end = block.indexOf('\n', start);
+    if (end == -1) end = block.length();
+
+    String line = block.substring(start, end);
+    line.trim();
+
+    // Skip echoes and empty lines
+    if (line == "AT+CIMI" || line.length() == 0) {
+      start = end + 1;
+      continue;
+    }
+
+    // Keep only digits in this line
+    String d = "";
+    for (int i = 0; i < line.length(); i++) {
+      if (isDigit(line[i])) d += line[i];
+    }
+
+    // IMSI is usually exactly 15 digits
+    if (d.length() == 15) {
+      imsiNum = d;
+      return true;
+    }
+
+    start = end + 1;
+  }
+
+  return false;
 }
-
 String phoneNum; 
 
 void readPhoneNum() {
@@ -1791,9 +1932,9 @@ bool parseCCLKResponse(const String& response) {
   if (year < 2023) return false;  // Reject obviously invalid time
 
   Serial_println("Got new date!");
-  // save the time inside the TimeLib library
+  // save the time inside the ESP32 system clock
   shiftTimestampsOnNewTime(hour, minute, second); 
-  setTime(hour, minute, second, day, month, year);
+  set_system_time_ymdhms(year, month, day, hour, minute, second);
   accurateTimeSet = true;
 
   // Print the parsed time
@@ -1861,6 +2002,9 @@ bool saveNewPrefValue(String key, String value) {
   else if(key == "sleep_enabled") {
     prefs.sleep_enabled = value.toInt();
   } 
+  else if(key == "sleep_dur_min") {
+    prefs.sleep_dur_min = value.toInt();
+  }
   else if(key == "sleep_2_send_interval_s") {
     prefs.sleep_2_send_interval_s = value.toInt();
   }
@@ -1922,7 +2066,7 @@ static const char *PREF_NAMESPACE = "time";
 static const uint32_t ESTIMATED_RESET_SECONDS = 2; 
 
 void saveTimeAndScheduleReset() {
-    time_t current = now();  // TimeLib current UNIX time
+    time_t current = (time_t)now_rtc_s();  // current UNIX time
 
     prefsStorage.begin(PREF_NAMESPACE, false);
     prefsStorage.putULong64("saved_time", (uint64_t)current);
@@ -1945,7 +2089,7 @@ void restoreTimeIfScheduledReset() {
     if (scheduled && saved > 0) {
         time_t restored = (time_t)saved + ESTIMATED_RESET_SECONDS;
 
-        setTime(restored); // Restore time into TimeLib
+        set_system_time_unix(restored); // Restore system time
         accurateTimeSet = true;
         Serial_print("Restored time after scheduled reset: ");  Serial_println(restored);
         Serial_print("Restored datetime: "); Serial_println(getFormattedTimeLibString());
@@ -2016,7 +2160,7 @@ void parseReturnData(String& data) {
   }
 
   if(newPrefsSet) {
-    prefs.pref_set_date = now();  // save when the preferences were set (TimeLib current UNIX time)
+    prefs.pref_set_date = (uint32_t)now_rtc_s();  // save when the preferences were set
     savePreferences();
     Serial_println("Done params section.\n");
   } else {
@@ -2151,6 +2295,7 @@ String getPostBodyPrefs() {
 
   body += "light_sleep_enabled=" + String(prefs.light_sleep_enabled) + ";";
   body += "sleep_enabled=" + String(prefs.sleep_enabled) + ";";
+  body += "sleep_dur_min=" + String(prefs.sleep_dur_min) + ";";
   body += "sleep_2_send_interval_s=" + String(prefs.sleep_2_send_interval_s) + ";";
   body += "sleep_hour_start=" + String(prefs.sleep_hour_start) + ";";
   body += "sleep_hour_end=" + String(prefs.sleep_hour_end) + ";";
@@ -2189,52 +2334,50 @@ String getPostBodyPrefs() {
 String getPostErrorsList() {
   String body;
   body.reserve(768);
-  body += "errors=";
-
-  body += "ERR_NONE:0,";
+  body += "ERR_NONE=0;";
 
   // ---- SEND / GSM / HTTP ----
-  body += "ERR_SEND_AT_FAIL:1,";
-  body += "ERR_SEND_NO_SIM:2,";
-  body += "ERR_SEND_CSQ_FAIL:3,";
-  body += "ERR_SEND_REG_FAIL:4,";
-  body += "ERR_SEND_CCLK_FAIL:5,";
-  body += "ERR_SEND_CIMI_FAIL:6,";
-  body += "ERR_SEND_GPRS_FAIL:7,";
-  body += "ERR_SEND_HTTP_FAIL_DATA:8,";
-  body += "ERR_SEND_UNKWN_FAIL:10,";
-  body += "ERR_SEND_REPEAT:11,";
-  body += "ERR_SEND_FAIL_WRONG_RESPONSE:12,";
-  body += "ERR_SEND_PREFS_HTTP_FAIL:13,";
-  body += "ERR_SEND_PREFS_HTTP_FAIL_RESPONSE:14,";
-  body += "ERR_SEND_ERRORS_HTTP_FAIL:15,";
-  body += "ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE:16,";
+  body += "ERR_SEND_AT_FAIL=1;";
+  body += "ERR_SEND_NO_SIM=2;";
+  body += "ERR_SEND_CSQ_FAIL=3;";
+  body += "ERR_SEND_REG_FAIL=4;";
+  body += "ERR_SEND_CCLK_FAIL=5;";
+  body += "ERR_SEND_CIMI_FAIL=6;";
+  body += "ERR_SEND_GPRS_FAIL=7;";
+  body += "ERR_SEND_HTTP_FAIL_DATA=8;";
+  body += "ERR_SEND_UNKWN_FAIL=10;";
+  body += "ERR_SEND_REPEAT=11;";
+  body += "ERR_SEND_FAIL_WRONG_RESPONSE=12;";
+  body += "ERR_SEND_PREFS_HTTP_FAIL=13;";
+  body += "ERR_SEND_PREFS_HTTP_FAIL_RESPONSE=14;";
+  body += "ERR_SEND_ERRORS_HTTP_FAIL=15;";
+  body += "ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE=16;";
 
   // ---- DIR / I2C ----
-  body += "ERR_DIR_READ:20,";
-  body += "ERR_DIR_READ_ONCE:21,";
-  body += "ERR_DIR_NOT_CONNECTED:22,";
-  body += "ERR_DIR_SHORT_BUF_FULL:23,";
-  body += "ERR_DIR_SDA_NOT_CONN:24,";
-  body += "ERR_DIR_SCL_NOT_CONN:25,";
-  body += "ERR_DIR_MAG_WEAK:26,";
+  body += "ERR_DIR_READ=20;";
+  body += "ERR_DIR_READ_ONCE=21;";
+  body += "ERR_DIR_NOT_CONNECTED=22;";
+  body += "ERR_DIR_SHORT_BUF_FULL=23;";
+  body += "ERR_DIR_SDA_NOT_CONN=24;";
+  body += "ERR_DIR_SCL_NOT_CONN=25;";
+  body += "ERR_DIR_MAG_WEAK=26;";
 
   // ---- WIND ----
-  body += "ERR_WIND_BUF_OVERWRITE:30,";
-  body += "ERR_WIND_SHORT_BUF_FULL:31,";
+  body += "ERR_WIND_BUF_OVERWRITE=30;";
+  body += "ERR_WIND_SHORT_BUF_FULL=31;";
 
   // ---- TEMP ----
-  body += "ERR_TEMP_READ:40,";
+  body += "ERR_TEMP_READ=40;";
 
   // ---- POWER / RESET ----
-  body += "ERR_RESET_BROWNOUT:52,";
-  body += "ERR_RESET_PANIC:53,";
-  body += "ERR_RESET_WDT:54,";
-  body += "ERR_RESET_UNEXPECTED:55;";
-  body += "ERR_CANT_SEND_FORCE_RST:56;";
+  body += "ERR_RESET_BROWNOUT=52;";
+  body += "ERR_RESET_PANIC=53;";
+  body += "ERR_RESET_WDT=54;";
+  body += "ERR_RESET_UNEXPECTED=55;";
+  body += "ERR_CANT_SEND_FORCE_RST=56;";
 
-  body += "LOG_RESET_SW:70;";
-  body += "LOG_RESET_POWERON:71;";
+  body += "LOG_RESET_SW=70;";
+  body += "LOG_RESET_POWERON=71;";
 
   return body;
 }
@@ -2391,13 +2534,16 @@ SendResult runHttpGetHot(int nTry) {
 
   // Step 1: Configure GPRS connection
   if (sendCommand("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
-  if (sendCommand("AT+SAPBR=3,1,\"APN\",\"internet\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
-  if (sendCommand("AT+SAPBR=3,1,\"USER\",\"mobitel\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
-  if (sendCommand("AT+SAPBR=3,1,\"PWD\",\"internet\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
+  
+  // telekom
+  //if (sendCommand("AT+SAPBR=3,1,\"APN\",\"internet\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
+  //if (sendCommand("AT+SAPBR=3,1,\"USER\",\"mobitel\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
+  //if (sendCommand("AT+SAPBR=3,1,\"PWD\",\"internet\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
 
-  //if (sendCommand("AT+SAPBR=3,1,\"APN\",\"internet.simobil.si\"") == "") return SendResult::GPRS_SETUP_FAIL;
-  //if (sendCommand("AT+SAPBR=3,1,\"USER\",\"simobil\"") == "") return SendResult::GPRS_SETUP_FAIL;
-  //if (sendCommand("AT+SAPBR=3,1,\"PWD\",\"internet\"", 2000) == "") return SendResult::GPRS_SETUP_FAIL;
+  // hofer
+  if (sendCommand("AT+SAPBR=3,1,\"APN\",\"internet.simobil.si\"") == "") return SendResult::GPRS_SETUP_FAIL;
+  if (sendCommand("AT+SAPBR=3,1,\"USER\",\"simobil\"") == "") return SendResult::GPRS_SETUP_FAIL;
+  if (sendCommand("AT+SAPBR=3,1,\"PWD\",\"internet\"", 2000) == "") return SendResult::GPRS_SETUP_FAIL;
 
   // Step 2: Open GPRS bearer
   if (sendCommand("AT+SAPBR=1,1", 15000) == "") return SendResult::GPRS_SETUP_FAIL;
@@ -2501,9 +2647,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
-
-
 
 
 

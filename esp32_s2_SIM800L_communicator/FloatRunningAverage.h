@@ -4,20 +4,30 @@
 template <int BUF_LEN>
 class FloatRunningAverage {
 public:
-    using ReadFunc = float (*)();   // function used to read the value that is going to be saved in the buffer
+    FloatRunningAverage()
+        : head(0), count(0), sum(0.0f) {}
 
-    FloatRunningAverage(ReadFunc fn)
-        : readFn(fn), head(0), count(0), sum(0.0f) {}
+    void addSample(float val) {
+        //Serial_print("favg read:");
+        //Serial_println(String(val, 3));
 
-    float log() {
-        float val = readFn();   // call the function
-        addSample(val);
-        return val;
+        if (count < BUF_LEN) {
+            buffer[head] = val;
+            sum += val;
+            head = (head + 1) % BUF_LEN;
+            count++;
+        } else {
+            float old = buffer[head];
+            sum -= old;
+            buffer[head] = val;
+            sum += val;
+            head = (head + 1) % BUF_LEN;
+        }
     }
 
     // return average value 
     float get() {
-        if (count == 0) return log();
+        if (count == 0) return NAN;
         return sum / (float)count;
     }
     
@@ -38,23 +48,6 @@ private:
     int head;
     int count;
     float sum;
-
-    ReadFunc readFn;
-
-    void addSample(float val) {
-        if (count < BUF_LEN) {
-            buffer[head] = val;
-            sum += val;
-            head = (head + 1) % BUF_LEN;
-            count++;
-        } else {
-            float old = buffer[head];
-            sum -= old;
-            buffer[head] = val;
-            sum += val;
-            head = (head + 1) % BUF_LEN;
-        }
-    }
 };
 
 

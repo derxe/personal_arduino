@@ -2,10 +2,15 @@
 #include <driver/rtc_io.h>
 #include <sys/time.h>
 
-#define WAKE_PIN       6
-#define DONE_PIN       10
-#define OVERRIDE_PIN   9
+#define WAKE_PIN       1
+#define DONE_PIN       2
 #define DONE_PULSE_MS  5
+
+#define OVERRIDE_PIN   40
+
+#define TX_PIN  39
+#define RX_PIN  37 
+#define Serial Serial1
 
 // Persists across deep-sleep resets (RTC memory)
 RTC_DATA_ATTR int64_t last_rtc_us = -1;
@@ -24,12 +29,16 @@ static void send_done_pulse() {
   digitalWrite(DONE_PIN, LOW);
 }
 
+
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
   while (!Serial) delay(1);
 
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+
   bootCount++;
-  Serial.printf("Boot #%lu\n", (unsigned long)bootCount);
+  Serial.printf("\r\n\r\nBoot #%lu\r\n", (unsigned long)bootCount);
 
   // GPIO setup
   pinMode(DONE_PIN, OUTPUT);
@@ -41,7 +50,7 @@ void setup() {
   int64_t now_us = now_rtc_us();
   if (last_rtc_us >= 0) {
     int64_t delta_us = now_us - last_rtc_us;
-    Serial.printf("RTC elapsed: %.3f s (%lld us)\n", delta_us / 1e6, (long long)delta_us);
+    Serial.printf("RTC elapsed: %.3f s (%lld us)\r\n", delta_us / 1e6, (long long)delta_us);
   } else {
     Serial.println("RTC elapsed: (first boot)");
   }
@@ -49,7 +58,7 @@ void setup() {
 
   // Why did we wake?
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  Serial.printf("Wake cause: %d\n", (int)cause);
+  Serial.printf("Wake cause: %d\r\n", (int)cause);
 
   switch (cause) {
     case ESP_SLEEP_WAKEUP_EXT0:
@@ -81,14 +90,15 @@ void setup() {
   rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
   rtc_gpio_pulldown_dis((gpio_num_t)WAKE_PIN);
 
-#define SLEEP_TIME_SEC 20
+  #define SLEEP_TIME_SEC (60*30)
 
   esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_PIN, 1); // 1 = wake when HIGH :contentReference[oaicite:1]{index=1}
   esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_TIME_SEC * 1000000ULL);
 
-  //Serial.println("Going to deep sleep now...");
-  //delay(50);
-  //esp_deep_sleep_start();
+  Serial.printf("Going to sleep for: %.1f mins\n\r", SLEEP_TIME_SEC/60.0); 
+  Serial.println("Going to deep sleep now...");
+  delay(50);
+  esp_deep_sleep_start();
 }
 
 void loop() {

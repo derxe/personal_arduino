@@ -2,10 +2,16 @@
 #include "AS5600.h"
 #include <Wire.h>
 
+
+
+#define TX_PIN  39
+#define RX_PIN  37 
+#define Serial Serial1
+
 // Define a custom TwoWire instance
-#define SDA_GPIO 5
-#define SCL_GPIO 7
-#define AS600_POWER_MOS_PIN 4
+#define AS5600_SDA_PIN 4
+#define AS5600_SCL_PIN 3
+#define AS5600_POWER_PIN 5
 AS5600 as5600;   
 
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
@@ -27,7 +33,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
   Serial.flush();
   switch(directionReadCount) {
     case 1:
-      pinMode(AS600_POWER_MOS_PIN, OUTPUT);
+      pinMode(AS5600_POWER_PIN, OUTPUT);
       break;
     
     case 2:
@@ -42,7 +48,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
       }
       portEXIT_CRITICAL_ISR(&timerMux);
 
-      pinMode(AS600_POWER_MOS_PIN, HIGH);
+      pinMode(AS5600_POWER_PIN, HIGH);
       break;
 
     case 100:
@@ -88,18 +94,22 @@ String getDirections() {
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
+  while (!Serial) delay(1);
+
    esp_log_level_set("i2c.master", ESP_LOG_NONE); 
 
-  pinMode(AS600_POWER_MOS_PIN, OUTPUT);
-  digitalWrite(AS600_POWER_MOS_PIN, LOW); 
+  pinMode(15, OUTPUT);
+  
+  pinMode(AS5600_POWER_PIN, OUTPUT);
+  digitalWrite(AS5600_POWER_PIN, LOW); 
 
   Serial.println(__FILE__);
   Serial.print("AS5600_LIB_VERSION: ");
   Serial.println(AS5600_LIB_VERSION);
   Serial.println();
 
-  Wire.begin(SDA_GPIO, SCL_GPIO); // 1 Mhz
+  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN); // 1 Mhz
   Wire.setClock(1000000UL);
   as5600.begin(4);  //  set direction pin.
   as5600.setDirection(AS5600_CLOCK_WISE);  //  default, just be explicit.
@@ -130,11 +140,55 @@ void setup()
   */
 }
 
+
+bool checkAS5600Connected() {
+  Wire.end();
+
+  // when we give power to the sensor the we 
+  // can measure the pulldownd on the sensor board to see if it is connected at all 
+
+  setPower(true);
+  pinMode(AS5600_SCL_PIN, INPUT_PULLDOWN);
+  pinMode(AS5600_SDA_PIN, INPUT_PULLDOWN);
+  delayMicroseconds(20); // wait to settle
+
+  int sda_read = digitalRead(AS5600_SDA_PIN);
+  int scl_read = digitalRead(AS5600_SCL_PIN);
+
+  //if(!sda_high) elog.logTmp(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
+  //if(!scl_high) elog.logTmp(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
+  //Serial.printf("sda: %d\r\n", sda_read);
+  //Serial.printf("scl: %d\r\n", scl_read);
+
+  // restore I2C
+  pinMode(AS5600_SDA_PIN, INPUT);
+  pinMode(AS5600_SCL_PIN, INPUT);
+  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN);
+  Wire.setClock(1000000UL);
+
+  return sda_read && scl_read;
+}
+
+void setPower(bool enable) {
+  if(enable) {
+    digitalWrite(AS5600_POWER_PIN, LOW);
+  } else {
+    digitalWrite(AS5600_POWER_PIN, HIGH);
+  }
+}
+
+// check if it is connected or not
+void loop1() {
+  Serial.printf("Is connected: %s\r\n", checkAS5600Connected()? "true" : "false");
+  delay(500);
+}
+
+
+// read the sensor
 void loop()
 {
   static uint32_t lastTimeRead = 0;
   uint32_t start, end;
-
 
   uint32_t now = millis();
   if (now - lastTimeRead >= 200)
@@ -154,13 +208,18 @@ void loop()
     Serial.println();
     */
 
+    if (!checkAS5600Connected()) {
+      Serial.println("Server not connected!");
+      return;
+    }
+
     start = micros();
-    digitalWrite(AS600_POWER_MOS_PIN, HIGH);
+    setPower(true);
     int detectMagnet = 0;
     delay(5);
     int countFailedMagnetDetection = 0;
     for(int i=0; i<50 && detectMagnet == 0; i++) {
-      detectMagnet = as5600.detectMagnet();
+      detectMagnet = as5600.readMagnitude() > 50;
       countFailedMagnetDetection += 1;
       delayMicroseconds(100);
     }
@@ -169,19 +228,18 @@ void loop()
 
     delayMicroseconds(100);
 
-    delay(10);
-    
+    //delay(2);
     
     int angle = as5600.readAngle()*360 / 4096;
-    delay(4);
-    int angle1 = as5600.readAngle()*360 / 4096;
-    delay(4);
-    int angle2 = as5600.readAngle()*360 / 4096;
-    delay(4);
-    int angle3 = as5600.readAngle()*360 / 4096;
+    //delay(4);
+    //int angle1 = as5600.readAngle()*360 / 4096;
+    //delay(4);
+    //int angle2 = as5600.readAngle()*360 / 4096;
+    //delay(4);
+    //int angle3 = as5600.readAngle()*360 / 4096;
     end = micros();
 
-    Serial.print(" Angle: "); Serial.print(angle); Serial.print(","); Serial.print(angle1); Serial.print(","); Serial.print(angle2); Serial.print(","); Serial.print(angle3);
+    Serial.print(" Angle: "); Serial.println(angle); //Serial.print(","); Serial.print(angle1); Serial.print(","); Serial.print(angle2); Serial.print(","); Serial.print(angle3);
     Serial.print(" Duration:"); Serial.print(end - start);
     Serial.print(" readMagnitude:"); Serial.print(as5600.readMagnitude());
     Serial.print(" detectMagnet:"); Serial.print(as5600.detectMagnet());
@@ -189,10 +247,24 @@ void loop()
     Serial.print(" magnetTooWeak:"); Serial.print(as5600.magnetTooWeak());
     Serial.println();
 
-    digitalWrite(AS600_POWER_MOS_PIN, LOW);
+    setPower(false);
 
   }
   
+}
+
+
+// toggle power on and off 
+void loop2() {
+  setPower(true);
+  digitalWrite(15, HIGH);
+  Serial.println("power ON");
+  delay(3000);
+
+  setPower(false);
+  digitalWrite(15, LOW);
+  Serial.println("power OFF");
+  delay(3000);
 }
 
 

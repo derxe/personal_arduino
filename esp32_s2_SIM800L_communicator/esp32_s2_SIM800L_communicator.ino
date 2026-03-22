@@ -1,8 +1,8 @@
-#define UART_DEBUG_TX_PIN  16
-#define UART_DEBUG_RX_PIN  14 // unused pin 14
+#define UART_DEBUG_SIM_TX_PIN  39
+#define UART_DEBUG_SIM_RX_PIN  37 
 
 #include <SerialMod0.h>
-SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX_PIN, UART_DEBUG_RX_PIN); 
+SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN); 
 #define SerialDBG SerialUart0
 
 #define Serial_print(x)    do { SerialDBG.print(x); /* Serial1.print(x);*/ } while (0)
@@ -12,7 +12,7 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_TX_PIN, UART_DEBUG_RX_PIN);
 #include <Preferences.h>
 #include "esp_log.h" 
 #include <SoftwareSerial.h>
-#include "Button2.h"
+#include "SimpleButton.h"
 #include "esp_timer.h"
 #include "AS5600.h"
 #include <Wire.h>
@@ -82,14 +82,14 @@ AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
   /*load_def_prefs*/            0,      // should be always 0 unless we want to use default preferences every reset
-  /*version*/                   "v10",
+  /*version*/                   "v2.0",
 
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
   /*url_stream*/                "http://46.224.24.144/veter/stream/",
 
-  /*light_sleep_enabled*/       1, 
+  /*light_sleep_enabled*/       2, 
   /*sleep_enabled*/             0,
   /*sleep_dur_min*/             60,
   /*sleep_2_send_interval_s*/   20, 
@@ -112,13 +112,13 @@ AppPrefs prefs = {
   /*blink_led_on_time_ms*/      20,  
   /*blink_led_interval_ds*/     20,  // deciseconds (0.1 s)
 
-  /*as5600_pwr_on_time_ms*/     100, 
+  /*as5600_pwr_on_time_ms*/     20, 
   /*as5600_read_interval_s*/    3,    
 
   /*wind_log_store_len*/        600,    
 
-  /*vbat_calib*/                0.0006598, 
-  /*vsolar_calib*/              0.003532
+  /*vbat_calib*/                0.0006355, 
+  /*vsolar_calib*/              0.0013187,
 };
 
 
@@ -140,116 +140,127 @@ enum class SendResult : int {
 
 //#define SerialDBG Serial
 
-#define RX_PIN 37
-#define TX_PIN 39
-//SoftwareSerial SerialAT(TX_PIN, RX_PIN);  // SIM800L <-> Arduino
+#define SIM_RX_PIN 34
+#define SIM_TX_PIN 35
+//SoftwareSerial SerialAT(SIM_TX_PIN, SIM_RX_PIN);  // SIM800L <-> Arduino
 #define SerialAT Serial1
 
 // watchdog pins 
-#define WAKE_PIN       6
-#define DONE_PIN       10
-#define DONE_PULSE_MS  5
+#define WAKE_PIN       1
+#define DONE_PIN       2
+#define DONE_PULSE_MS  5    // duration of the pulse to reset the watchdog timer
 
-#define BUTTON_0_PIN     0
-#define BUTTON_PIN       9
-#define BUTTON_2_PIN     11
-#define GPRS_ON_PIN      18   // MOS FET turn on pin
-#define GPRS_POWER_PIN   35   // PWX pin on the SIM800C board
-#define V_BATT_PIN       13
-#define V_SOALR_PIN      8
+#define BUTTON_INFO_PIN   0
+#define BUTTON_SEND_PIN   40
+#define GPRS_ON_PIN       21   // MOS FET turn on pin
+#define GPRS_POWER_PIN    33   // PWX pin on the SIM800C board
+#define V_BATT_PIN        18
+#define V_SOALR_PIN       17
 
-#define POWER_GPRS_BOARD_ON()  do { pinMode(GPRS_ON_PIN, OUTPUT); digitalWrite(GPRS_ON_PIN, LOW); } while (0)
-#define POWER_GPRS_BOARD_OFF() do { digitalWrite(GPRS_ON_PIN, HIGH); pinMode(GPRS_ON_PIN, INPUT); } while (0)
+#define POWER_GPRS_BOARD_ON()  do { digitalWrite(GPRS_ON_PIN, HIGH); } while (0)
+#define POWER_GPRS_BOARD_OFF() do { digitalWrite(GPRS_ON_PIN, LOW);  } while (0)
 
 
-#define BLINK_LED_PIN      15
+#define BLINK_LED_PIN      15 
 //#define BLINK_LED_ON_TIME  20    
 //#define BLINK_LED_INTERVAL 2000  
 
-#define SPIN_LED_PIN       3
+#define SPIN_LED_PIN       38
 //#define SPIN_LED_ON_TIME   20   
 
-#define DIR_LED_PIN        2
-//#define DIR_LED_ON_TIME    10
 
-#define ERROR_LED_PIN      1
+#define ERROR_LED_PIN      36
 //#define ERROR_LED_ON_TIME  10
 
 //#define VANE_POWER_PIN   1
-#define HAL_SENSOR_PIN     12
+
+
+#define HAL_SENSOR_PIN     7
+#define HAL_POWER_PIN      6
+
+class SpeedHalSensor {
+private:
+    const int sensorPin;
+    const int powerPin;
+
+    bool hasPower = false;
+
+public:
+    SpeedHalSensor(int sensorPin, int powerPin)
+        : sensorPin(sensorPin), powerPin(powerPin) {}
+
+    void begin() {
+        pinMode(powerPin, OUTPUT);
+        setPower(true);
+    }
+
+    bool isConnected() {
+        pinMode(sensorPin, INPUT_PULLDOWN);
+        int readDown = digitalRead(sensorPin);
+
+        pinMode(sensorPin, INPUT_PULLUP);
+        int readUp = digitalRead(sensorPin);
+
+        // restore senorPin Pull up/down configuration
+        setPower(hasPower);
+
+        if(readDown == 0 && readUp == 0) return true;  // magnet present
+        if(readDown == 1 && readUp == 1) return true;  // magnet not present
+
+        return false; // since there is no chip changing the sensorPin, the pull down should be 0 and pull up should 1
+    }
+
+    void setPower(bool enable) {
+        hasPower = enable;
+
+        if(enable) {
+            digitalWrite(powerPin, LOW);
+            pinMode(sensorPin, INPUT_PULLUP);
+        } else {
+            digitalWrite(powerPin, HIGH);
+            pinMode(sensorPin, INPUT_PULLDOWN);
+        }
+    }
+
+    int read() {
+        if(!hasPower) return -1;
+        return digitalRead(sensorPin);
+    }
+};
+
+SpeedHalSensor speedHalSensor(HAL_SENSOR_PIN, HAL_POWER_PIN);
 
 
 
-//#define STORE_WIND_DATA_INTERVAL 5 // save data each X seconds 
+// this code block is execuded only once used for single time prints 
+#define RUN_ONCE(code)            \
+do {                              \
+    static bool _once = false;    \
+    if (!_once) {                 \
+        _once = true;             \
+        code;                     \
+    }                             \
+} while(0)
 
 
-
-//#define TIMER_PIN 14
-
-/*
-TODO imporvments:
-
-*/
-
-/*
-
-Single battery powered 
-3.2 volts, no extra capacitors
-Runs ok, reset on GPRS power ON or on attempting to connect 
-
-Single battery powered 
-3.2 volts, 4.7uF on gprs, No on ESP
-Reset on power GPRS on
-
-Single battery powered 
-3.15 volts, 4.7uF on gprs and ESP: Send succesful!!
-3.14: Send succesful:
-3.10: Success! 
-
-Single battery powered 
-3.10 volts, 4.7uF and ESP: Success!
-
-Single battery powered 
-3.08 volts, 1uF and ESP: Fail on send, Fail on send 
-3.3 V; Success 
-3,24: ok 
-
-3,84 v: orange battery: Fail on connect
-3,8 V orange bat2: Fail on connect
-
-3.22V fast discharging vape batt: Fail on connect 
-3,48: ok maybe a bit wierd behaviour
-3,45 ok
-3,43 ok
-3,33 ok
-3,23 ok, fail on conn, fail   
-
-
-*/
 // Define a custom TwoWire instance
-#define AS5600_SDA_PIN             5
-#define AS5600_SCL_PIN             7      
-#define AS600_POWER_PIN            4
+#define AS5600_SDA_PIN             4
+#define AS5600_SCL_PIN             3      
+#define AS5600_POWER_PIN           5
 AS5600 as5600; 
 
-// this temerature sensor is inside
-#define AHT20_1_PWR_PIN   40
-#define AHT20_1_SDA_PIN   36
-#define AHT20_1_SCL_PIN   38
-AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN);
+#define AHT20_1_PWR_PIN   10
+#define AHT20_1_SDA_PIN   8
+#define AHT20_1_SCL_PIN   9
+AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN, AHT20_1_PWR_PIN, 1);
 
-// for the outside sensor 
-#define AHT20_2_PWR_PIN   17
-#define AHT20_2_SDA_PIN   21
-#define AHT20_2_SCL_PIN   34
-AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN);
+#define AHT20_2_PWR_PIN   12
+#define AHT20_2_SDA_PIN   11
+#define AHT20_2_SCL_PIN   13
+AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
 
-
-#define ANALOG_PIN 123
-
-Button2 button0;
-Button2 button;
-Button2 button2;
+SimpleButton buttonInfo;
+SimpleButton buttonSend;
 
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t lastNow = 0;
@@ -259,15 +270,12 @@ void IRAM_ATTR onReadHal(void* arg);
 void IRAM_ATTR onReadSpeed(void* arg);
 void IRAM_ATTR onBlinkLed(void* arg);
 void IRAM_ATTR onSpinLed(void* arg);
-void IRAM_ATTR onDirLed(void* arg);
 void IRAM_ATTR onErrorLed(void* arg);
 void IRAM_ATTR onStoreWindData(void* arg);
 void IRAM_ATTR onResetWatchdogTimer(void* arg);
 
-void tap0(Button2& btn);
-void tap(Button2& btn);
-void tap2(Button2& btn);
-void longClick2(Button2& btn);
+void clickInfo();
+void clickSend();
 
 #define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
 //#define DEEP_SLEEP_DURATION  5*60 * 1000 * 1000  // 20 seconds
@@ -287,9 +295,8 @@ void printVersionAndCompileDate() {
 
 void printAS5600Config() {
   //portENTER_CRITICAL(&timerMux);
-
-  digitalWrite(AS600_POWER_PIN, HIGH);  
-  delay(10);
+  setPowerDirectionSensor(true);
+  delay(10); // wait for the sensor to boot up 
 
   AS5600 as = as5600;
   Serial_println(F("===== AS5600 CONFIGURATION ====="));
@@ -333,29 +340,19 @@ void printAS5600Config() {
   Serial_print(F("Angle: ")); Serial_println(as.readAngle());
   Serial_println();
 
-  digitalWrite(AS600_POWER_PIN, LOW);  
+  digitalWrite(AS5600_POWER_PIN, LOW);  
   //portEXIT_CRITICAL(&timerMux);
 }
 
 void welcomTurnOnBlink() {
-  int dur = 10;
-  digitalWrite(SPIN_LED_PIN, HIGH);
-  delay(5*dur);
-  digitalWrite(DIR_LED_PIN, HIGH);
-  delay(5*dur);
-  digitalWrite(ERROR_LED_PIN, HIGH);       
-  delay(10*dur);  
   digitalWrite(SPIN_LED_PIN, LOW);
-  digitalWrite(DIR_LED_PIN, LOW);     
-  digitalWrite(ERROR_LED_PIN, LOW);       
-  delay(10*dur);  
-  digitalWrite(SPIN_LED_PIN, HIGH);
-  digitalWrite(DIR_LED_PIN, HIGH);     
-  digitalWrite(ERROR_LED_PIN, HIGH); 
-  delay(20*dur);   
   digitalWrite(ERROR_LED_PIN, LOW);
-  digitalWrite(DIR_LED_PIN, LOW);   
-  digitalWrite(SPIN_LED_PIN, LOW); 
+  digitalWrite(BLINK_LED_PIN, LOW);
+  delay(1000);
+  digitalWrite(SPIN_LED_PIN, HIGH);
+  digitalWrite(ERROR_LED_PIN, HIGH);
+  digitalWrite(BLINK_LED_PIN, HIGH);
+  delay(1000);
 }
 
 
@@ -483,41 +480,26 @@ void printPreferences() {
   Serial_println("---------------------");
 }
 
-bool checkHalSpinSensorConnected() {
-  // We cant test that since there is no way to control the power of the hal sensor
-  // TODO check if the PIN is connected by giving a power to the sensor and then checking how the hal pin responds 
-  return true;
+void errorLedBlink(uint8_t nblinks, uint16_t blinkDelay=200) {
+  while(nblinks-- > 0) {
+    digitalWrite(ERROR_LED_PIN, LOW);
+    delay(blinkDelay);
+    digitalWrite(ERROR_LED_PIN, HIGH);
+    delay(blinkDelay);
+  }
 }
 
 void checkSensorsConnected() {
   if(!checkAS5600Connected()) {
     Serial_println("AS5600 not connected!");
-    digitalWrite(DIR_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, HIGH);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, HIGH);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, HIGH);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(DIR_LED_PIN, HIGH);
+    errorLedBlink(2, 300);
+    delay(500);
   }
 
-  if(!checkHalSpinSensorConnected()) {
-    Serial_print("Hal Spin sensor not connected!");
-    digitalWrite(SPIN_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(SPIN_LED_PIN, HIGH);
-    delay(400);
-    digitalWrite(SPIN_LED_PIN, LOW);
-    delay(400);
-    digitalWrite(SPIN_LED_PIN, HIGH);
+  
+  if(!speedHalSensor.isConnected()) {
+    Serial_print("speed hal sensor not connected!");
+    errorLedBlink(3, 150);
   }
 }
 
@@ -535,6 +517,7 @@ static void reset_watchdog_timer() {
   digitalWrite(DONE_PIN, HIGH);
   delay(DONE_PULSE_MS);
   digitalWrite(DONE_PIN, LOW);
+  pinMode(DONE_PIN, INPUT_PULLDOWN);
 }
 
 static int64_t now_rtc_s() {
@@ -596,7 +579,6 @@ void setup() {
 
   elog.init();
   ResetInfo ri = readResetInfo();
-  printResetInfo(ri);
 
   switch (ri.reason) {
     case ESP_RST_BROWNOUT:       
@@ -635,11 +617,11 @@ void setup() {
   //Serial.begin(115200);
 
   SerialDBG.begin(115200);
-
   Serial_println();
-  Serial_println("### PROGRAM START! ###");
-  printVersionAndCompileDate();
 
+  Serial_println("### PROGRAM START! ###");
+  printResetInfo(ri);
+  printVersionAndCompileDate();
   restoreTimeIfScheduledReset();
 
   loadPreferences();
@@ -673,35 +655,34 @@ void setup() {
     evaluateIfDeepSleep();
   }
 
-  SerialAT.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN); // 33, 34);
+  SerialAT.begin(115200, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
 
-  POWER_GPRS_BOARD_OFF();
+  pinMode(GPRS_ON_PIN, OUTPUT); POWER_GPRS_BOARD_OFF();
   pinMode(GPRS_POWER_PIN, OUTPUT); digitalWrite(GPRS_POWER_PIN, HIGH); // off
   //pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
-  pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);    // off
-  pinMode(DIR_LED_PIN, OUTPUT);    digitalWrite(DIR_LED_PIN, LOW);          // off
-  pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);         // off
+  pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);     // off
+  pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);    // off
   pinMode(AHT20_1_PWR_PIN, OUTPUT);  digitalWrite(AHT20_1_PWR_PIN, LOW);
   pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, LOW);
+  pinMode(WAKE_PIN, INPUT_PULLUP);
+  pinMode(DONE_PIN, INPUT_PULLDOWN);
+  
   // Power ON AHT20
   //pinMode(TIMER_PIN, OUTPUT); digitalWrite(TIMER_PIN, LOW);
   //pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
   //gpio_set_drive_capability((gpio_num_t) VANE_POWER_PIN, GPIO_DRIVE_CAP_3);
 
-  pinMode(AS600_POWER_PIN, OUTPUT); digitalWrite(AS600_POWER_PIN, LOW);  
-  gpio_set_drive_capability((gpio_num_t) AS600_POWER_PIN, GPIO_DRIVE_CAP_3);
+  // only needed if the sensor is powered directly from the CPU and not from the MOS
+  pinMode(AS5600_POWER_PIN, OUTPUT); setPowerDirectionSensor(false);  
+  //gpio_set_drive_capability((gpio_num_t) AS5600_POWER_PIN, GPIO_DRIVE_CAP_3);
 
+  speedHalSensor.begin();
 
-  pinMode(HAL_SENSOR_PIN, INPUT_PULLUP);
+  buttonInfo.begin(BUTTON_INFO_PIN);
+  buttonInfo.setClickHandler(clickInfo);
 
-  button0.begin(BUTTON_0_PIN);
-  button0.setClickHandler(tap0);
-
-  button.begin(BUTTON_PIN);
-  button.setPressedHandler(tap);
-
-  button2.begin(BUTTON_2_PIN);
-  button2.setClickHandler(tap2);
+  buttonSend.begin(BUTTON_SEND_PIN);
+  buttonSend.setClickHandler(clickSend);
 
   checkSensorsConnected();
 
@@ -709,10 +690,8 @@ void setup() {
   Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN); 
   Wire.setClock(1000000UL); // 1 Mhz
 
-  aht1.SDA_LOW();  // Put everything to low
-  aht1.SCL_LOW();
-  aht2.SDA_LOW(); 
-  aht2.SCL_LOW();
+  aht1.init();
+  aht2.init();
 
   setCpuFrequencyMhz(80);
 
@@ -752,18 +731,6 @@ void setup() {
   if(prefs.spin_led_on_time_ms > 0) {
     esp_timer_create(&spinLed_args, &spinLed_timer);
     esp_timer_start_periodic(spinLed_timer, prefs.spin_led_on_time_ms * 1000); 
-  }
-
-  esp_timer_handle_t dirLed_timer;
-  const esp_timer_create_args_t dirLed_args = {
-    .callback = &onDirLed,                
-    .arg = NULL,
-    .dispatch_method = ESP_TIMER_TASK,
-    .name = "dirLed_timer"
-  };
-  if(prefs.dir_led_on_time_ms > 0) {
-    esp_timer_create(&dirLed_args, &dirLed_timer);
-    esp_timer_start_periodic(dirLed_timer, prefs.dir_led_on_time_ms * 1000);  
   }
 
   esp_timer_handle_t errorLed_timer;
@@ -832,54 +799,27 @@ void setup() {
   reset_watchdog_timer();
 }
 
-bool readSensorTempHum_inside(float &tempC, float &humRH) {
-  digitalWrite(AHT20_1_PWR_PIN, HIGH);
+bool readTempHum(AHT20SoftI2C &ahtSensor, float &t, float &h) {
+  ahtSensor.setPower(true);
 
-  // Put bus in idle state
-  aht1.SDA_HIGH();
-  aht1.SCL_HIGH();
-  delay(200);
-
-  if (!aht1.aht20_init()) {
-    digitalWrite(AHT20_1_PWR_PIN, LOW);
-    aht1.SDA_LOW();   // put everything to low
-    aht1.SCL_LOW();
+  if (!ahtSensor.checkIsConnected()) {
+    Serial_print("Temp sensor"); Serial_print(ahtSensor.id); Serial.println(": is not connected!");
     return false;
   }
 
-  bool success = aht1.aht20_read(tempC, humRH);
-  success = aht1.aht20_read(tempC, humRH); // read twice to be safe
-
-  digitalWrite(AHT20_1_PWR_PIN, LOW);
-
-  aht1.SDA_LOW();
-  aht1.SCL_LOW();
-  return success;
-}
-
-bool readSensorTempHum_outside(float &tempC, float &humRH) {
-  digitalWrite(AHT20_2_PWR_PIN, HIGH);
-
-  // Put bus in idle state
-  aht2.SDA_HIGH();
-  aht2.SCL_HIGH();
-  delay(200);
-
-  if (!aht2.aht20_init()) {
-    digitalWrite(AHT20_2_PWR_PIN, LOW);
-    aht2.SDA_LOW();   // put everything to low
-    aht2.SCL_LOW();
-    return false;
+  delay(10);
+  int readStatus = 0;
+  int retries = 10;
+  for(int i=0; i<retries; i++) {
+    readStatus = ahtSensor.aht20_read(t, h);
+    //Serial.printf("Read status: %d\r\n", readStatus);
+    if(readStatus == 1) break; 
+    delay(30);
   }
 
-  bool success = aht2.aht20_read(tempC, humRH);
-  success = aht2.aht20_read(tempC, humRH); // read twice to be safe
-
-  digitalWrite(AHT20_2_PWR_PIN, LOW);
-
-  aht2.SDA_LOW();
-  aht2.SCL_LOW();
-  return success;
+  ahtSensor.setPower(false);
+  
+  return readStatus == 1;
 }
 
 uint32_t get_log_timestamp(int hour, int minute, int second) {
@@ -925,15 +865,6 @@ void IRAM_ATTR onSpinLed(void* arg) {
   }
 }
 
-volatile int direction_detected_north = 0;
-void IRAM_ATTR onDirLed(void* arg) {
-  if(direction_detected_north == 1) {
-    direction_detected_north = 0;
-    digitalWrite(DIR_LED_PIN, HIGH);    
-  } else {
-    digitalWrite(DIR_LED_PIN, LOW); 
-  }
-}
 
 volatile int error_notify_led = 0;
 volatile bool enableErrorLedBlinking = true;
@@ -965,22 +896,18 @@ bool checkAS5600Connected() {
   // when we give power to the sensor the we 
   // can measure the pulldownd on the sensor board to see if it is connected at all 
 
-  digitalWrite(AS600_POWER_PIN, HIGH); 
+  setPowerDirectionSensor(true);
   pinMode(AS5600_SCL_PIN, INPUT_PULLDOWN);
   pinMode(AS5600_SDA_PIN, INPUT_PULLDOWN);
   delayMicroseconds(20); // wait to settle
 
-  int sda_read = analogRead(AS5600_SDA_PIN);
-  int scl_read = analogRead(AS5600_SCL_PIN);
-  bool sda_high = sda_read > 1000;
-  bool scl_high = scl_read > 1000;
+  int sda_read = digitalRead(AS5600_SDA_PIN);
+  int scl_read = digitalRead(AS5600_SCL_PIN);
 
-  bool something_connected = sda_high || scl_high;
-
-  if(!sda_high) elog.logTmp(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
-  if(!scl_high) elog.logTmp(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
-  //Serial_print("sda:"); Serial_print(sda_high);
-  //Serial_print(" scl:"); Serial_println(scl_high);
+  if(!sda_read) elog.logTmp(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
+  if(!scl_read) elog.logTmp(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
+  //Serial_print("sda: "); Serial_println(sda_read);
+  //Serial_print("scl: "); Serial_println(scl_read);
 
   // restore I2C
   pinMode(AS5600_SDA_PIN, INPUT);
@@ -988,7 +915,15 @@ bool checkAS5600Connected() {
   Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN);
   Wire.setClock(1000000UL);
 
-  return something_connected;
+  return sda_read && scl_read;
+}
+
+void setPowerDirectionSensor(bool enable) {
+  if(enable) {
+    digitalWrite(AS5600_POWER_PIN, LOW);
+  } else {
+    digitalWrite(AS5600_POWER_PIN, HIGH);
+  }
 }
 
 void IRAM_ATTR onReadDirection(void* arg) {
@@ -1002,13 +937,13 @@ void IRAM_ATTR onReadDirection(void* arg) {
 
   //Serial.flush();
   if(directionReadCount == 1) {
-    digitalWrite(AS600_POWER_PIN, HIGH);
+    setPowerDirectionSensor(true);
 
     if(!checkAS5600Connected()) {
       //Serial_println("Dir sensor not conn");
       elog.logTmp(ErrorLogger::ERR_DIR_NOT_CONNECTED);
       directionReadCount = 3; // skip the next step where the magnet is actually read
-      digitalWrite(AS600_POWER_PIN, LOW); // the sensor is not connected so turn it off again
+      setPowerDirectionSensor(false);// the sensor is not connected so turn it off again
       error_notify_led = 1;
     }
   }
@@ -1042,15 +977,11 @@ void IRAM_ATTR onReadDirection(void* arg) {
     if(as5600_error == 0) {
       // successful angle read
       last_direction_read = angle;
-      if(millis() < 1000*20) {// only log for first 20 s
-        //DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
+      if(millis() < 1000*60) {// only log for first 60 s
+        DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
         Serial_print("Read angle: "); Serial_println(angle); 
       }
 
-      // what should be considered "facing north", how much can the angle diviate from north
-      #define BLINK_MARGIN  20
-      if(BLINK_MARGIN > angle || angle > 360-BLINK_MARGIN) direction_detected_north = 1; // blink north direction led
-      
       portENTER_CRITICAL_ISR(&timerMux);
       if(directions_log_i < DIRECTIONS_LOG_LEN) {
         // save the measurement inside the log
@@ -1062,14 +993,14 @@ void IRAM_ATTR onReadDirection(void* arg) {
 
     } else {
       last_direction_read = as5600_error; // no angle was succesfully read due to an error
-      Serial_print("Read angle error: "); {
-      Serial_println(as5600_error);
+      //Serial_print("Read angle error: ");
+      //Serial_println(as5600_error);
       error_notify_led = 1;
-      }
+      
       elog.logTmp(ErrorLogger::ERR_DIR_READ);
     }
     
-    digitalWrite(AS600_POWER_PIN, LOW);
+    setPowerDirectionSensor(false);
   }
 
   // reset the directionReadCount when we hit the ir_cycles 
@@ -1090,7 +1021,7 @@ volatile int lastHalSensorRead = -1;
 volatile uint32_t lastDetection = 0; // we need to store the time of last detection to calculate rotations per second
 void IRAM_ATTR onReadHal(void* arg) {
   // Example logic: latch HAL sensor if triggered
-  int halSensorRead = digitalRead(HAL_SENSOR_PIN);
+  int halSensorRead = speedHalSensor.read();
   if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
     uint32_t now = micros() / 1000;
 
@@ -1392,27 +1323,23 @@ bool isLightSleep() {
   return true; // undefined state presumes light sleep is enabled
 }
 
-FloatRunningAverage<32> vBattAvg(read_batt_v);
-FloatRunningAverage<8> vSolarAvg(read_solar_v);
+FloatRunningAverage<32> vBattAvg;
+FloatRunningAverage<8> vSolarAvg;
 
 
 uint32_t lastSend = 0;
 uint32_t lastSuccessfulSend = 0;
 void loop() {
-  button0.loop();
-  button.loop();
-  button2.loop();
+  RUN_ONCE({ Serial_println("Inisde the main loop!"); });
+
+  buttonInfo.loop();
+  buttonSend.loop();
+
   evaluateIfDeepSleep();
   esp_task_wdt_reset();
 
   static uint32_t lastPrint = 0;
   static uint32_t lastVBattIdeLog = 0;
-  
-  /*
-  if(millis() - lastPrint > 60*1000) {
-    lastPrint = millis();
-    printDiagnosticInfo();
-  }*/
 
   uint32_t secSinceLastSend = (millis() - lastSend)/1000;
   if(isTimeToSendData(secSinceLastSend)) {
@@ -1423,9 +1350,15 @@ void loop() {
 
   // read battery voltage every 5s
   if(millis() - lastVBattIdeLog > 5*1000) {
+    if(lastVBattIdeLog == 0) {
+      // skip the first read since it is for some reason too high :shrug:
+      read_batt_v(); read_solar_v();
+    } else {
+      vBattAvg.addSample(read_batt_v());
+      vSolarAvg.addSample(read_solar_v());
+    }
+
     lastVBattIdeLog = millis();
-    vBattAvg.log();
-    vSolarAvg.log();
   }
 
   // check if the station was unable to send the data for longer then 1 hour 
@@ -1441,17 +1374,12 @@ void loop() {
 
   //updateSerial();
 
-  if(prefs.light_sleep_enabled == 1) {
-    esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start(); // 5 ms sleep 
-  } else {
-    // only go to light sleep if enough time passed after reset. So that we can connect to USB after reseting 
-    
-  }
-
   if(isLightSleep()){
     esp_sleep_enable_timer_wakeup(5*1000); esp_light_sleep_start();
+    RUN_ONCE({ Serial_println("Entering light sleep  cylcle from now on."); });
   } else {
     delay(2);
+    RUN_ONCE({ Serial_println("Sleep not enabled for now."); });
   }
 }
 
@@ -1464,13 +1392,19 @@ float read_solar_v() {
 }
 
 void turnOnModule() {
-  Serial1.println("turning on");
+  Serial_println("Giving power to GPRS module");
 
-  for(int i=0; i<40;i++){
-    POWER_GPRS_BOARD_ON();
-    delayMicroseconds(50*i); 
+  for(int i=0; i<50;i++){
+    POWER_GPRS_BOARD_ON(); 
     POWER_GPRS_BOARD_OFF();
-    delay(3);
+    delayMicroseconds(100);
+  }
+
+  for(int i=0; i<200;i++){
+    POWER_GPRS_BOARD_ON();
+    delayMicroseconds(10*((i)/10)); 
+    POWER_GPRS_BOARD_OFF();
+    delay(1);
   }
   POWER_GPRS_BOARD_ON();
 
@@ -1501,15 +1435,16 @@ float temp_out = NAN;
 float hum_out = NAN; 
 
 
-void tap0(Button2& btn) {
-  Serial_println("tap 0");
+
+bool isOn = false;
+void clickInfo() {
+  printPreferences();
+  printDiagnosticInfo();
 }
 
-void tap2(Button2& btn) {
+void clickSend() {
   fullCycleSend();
 }
-
-
 
 void fullCycleSend() {
   esp_task_wdt_delete(NULL);
@@ -1517,29 +1452,25 @@ void fullCycleSend() {
   const int nSendRetrys = prefs.n_send_retries;
   bool sendOk = false;
 
-  // we read temereature and humidity before tu
   temp_in = NAN; hum_in = NAN;
-  int tempReadTries = 5;
-  while(--tempReadTries > 0 && !readSensorTempHum_inside(temp_in, hum_in));
-
-  Serial_print("temp_in:"); Serial_println(String(temp_in, 2));
-  Serial_print("humy_in:"); Serial_println(String(hum_in, 2));
-
-  if (isnan(temp_in)) {
+  bool success = readTempHum(aht1, temp_in, hum_in);
+  if (!success) {
     elog.log(ErrorLogger::ERR_TEMP_READ);
+  } else {
+    Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
+    Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
   }
 
-  // we read temereature and humidity before tu
   temp_out = NAN; hum_out = NAN;
-  tempReadTries = 5;
-  while(--tempReadTries > 0 && !readSensorTempHum_outside(temp_out, hum_out));
-
-  Serial_print("temp_out:"); Serial_println(String(temp_out, 2));
-  Serial_print("humy_out:"); Serial_println(String(hum_out, 2));
-
-  if (isnan(temp_out)) {
+  success = readTempHum(aht2, temp_out, hum_out);
+  if (!success) {
     elog.log(ErrorLogger::ERR_TEMP_READ);
+  } else {
+    Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
+    Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
   }
+
+
 
   hasSendAfterTurnOn = true; // we tried sending!
   for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
@@ -1580,34 +1511,39 @@ void printDiagnosticInfo() {
   Serial_print("WIND_LOG_STORE_LEN: "); Serial_println(WIND_LOG_STORE_LEN);
   Serial_print("w_count: "); Serial_println(w_count);
   Serial_print("Time: "); Serial_println(getFormattedTimeLibString());
-  Serial_print("Last send: "); Serial_print((millis() - lastSend)/(1000*60)); Serial_println(" min ago"); 
-  Serial_print("v batt avg:"); Serial_println(String(vBattAvg.get(), 3));
-  Serial_print("v solar avg:"); Serial_println(String(vSolarAvg.get(), 3));
-  Serial_print("v batt:"); Serial_println(String(read_batt_v(), 3));
-  Serial_print("v solar:"); Serial_println(String(read_solar_v(), 3));
+  Serial_print("Last send:   "); Serial_print((millis() - lastSend)/(1000*60)); Serial_println(" min ago"); 
+  
+  Serial_println("\r\nAnalog measurements:");
+  Serial_print("v batt avg:  "); Serial_println(String(vBattAvg.get(), 3));
+  Serial_print("v solar avg: "); Serial_println(String(vSolarAvg.get(), 3));
+  Serial_print("v batt:      "); Serial_println(String(read_batt_v(), 3)); 
+  Serial_print("v solar:     "); Serial_println(String(read_solar_v(), 3));
+  //Serial_print("v batt raw:  "); Serial_println(analogRead(V_BATT_PIN)); 
+  //Serial_print("v solar raw: "); Serial_println(analogRead(V_SOALR_PIN));
 
-  float t = 0.0f; float h = 0.0f;
-  if(readSensorTempHum_inside(t, h)) { 
-    Serial_print("temp_in:"); Serial_println(String(t, 2));
-    Serial_print("humy_in:"); Serial_println(String(h, 2));
+  temp_in = NAN; hum_in = NAN;
+  bool success = readTempHum(aht1, temp_in, hum_in);
+  if (!success) {
+    Serial_println("temp1 failed to read"); 
   } else {
-    Serial_println("temp_in: failed to read");
-    Serial_println("humy_in: failed to read");
+    Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
+    Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
   }
 
-  if(readSensorTempHum_outside(t, h)) { 
-    Serial_print("temp_out:"); Serial_println(String(t, 2));
-    Serial_print("humy_out:"); Serial_println(String(h, 2));
+  temp_out = NAN; hum_out = NAN;
+  success = readTempHum(aht2, temp_out, hum_out);
+  if (!success) {
+    Serial_println("temp2 failed to read"); 
   } else {
-    Serial_println("temp_out: failed to read");
-    Serial_println("humy_out: failed to read");
+    Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
+    Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
   }
 
   // Serial_println("wind data: " + getWindData());
   // TODO implement idk Serial_println("last_dir_read: " + String(last_direction_read));
 
   // read AS5600 angle:
-  digitalWrite(AS600_POWER_PIN, HIGH); delay(20); // turn it on and wait 
+  setPowerDirectionSensor(true); delay(20); // turn it on and wait for the sensor to boot up
   int angle = as5600.readAngle() * 360 / 4096;
   int error = as5600.lastError();
   if(error == 0) {
@@ -1627,12 +1563,7 @@ void printDiagnosticInfo() {
   Serial_println();
 }
 
-void tap(Button2& btn) {
-  printPreferences();
-  printDiagnosticInfo();
 
-  //goToDeepSleep();
-}
 
 String inputBuffer = "";
 bool updateSerial() {
@@ -1719,6 +1650,7 @@ String sendCommand(const String& command, int timeoutMs = 1000, String expectedR
   }
   #ifdef PRINT_SIM_COMM
   Serial_println("norsps?");
+  Serial_print("Response: '"); Serial_print(response); Serial_println("'");
   #endif 
   return response;
 }

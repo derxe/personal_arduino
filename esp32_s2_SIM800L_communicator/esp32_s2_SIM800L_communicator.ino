@@ -10,13 +10,14 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #define Serial_write(x)  do { SerialDBG.write(x); /*Serial1.write(x);*/ } while (0)
 
 #include <Preferences.h>
+#include "unix_compile_time.h"
 #include "esp_log.h" 
 #include <SoftwareSerial.h>
 #include "SimpleButton.h"
 #include "esp_timer.h"
 #include "AS5600.h"
 #include <Wire.h>
-#include <time.h>
+#include "myTime.h"
 #include <sys/time.h>
 #include <Preferences.h>
 #include "ErrorLogger.h"
@@ -25,102 +26,15 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #include "FloatRunningAverage.h"
 #include <string.h>  // for memcpy
 #include "AHT20_SoftI2C.h"
-#include "unix_compile_time.h"
 #include "esp_task_wdt.h"
 
 typedef struct {
     uint16_t avg;
+    uint16_t avg2;
     //uint16_t max; // we dont need to log max speed
     int16_t dir;      // from 0 - 360, negative values for errors 
     //uint16_t ts;   // we only log last and first log instead of logging every timestamp
 } WindSample;
-
-struct AppPrefs { 
-  uint16_t pref_version;               // just an intiger to difirentiata between different versions 
-  uint32_t pref_set_date;              // the date time when the preferences were set
-  uint8_t  load_def_prefs;             // if not 0 it loads the default preferences defined in the code on the next boot
-  char     version[8];                 // program/sw version
-  char     url_data[128];              // url that is used to send the data to 
-  char     url_prefs[128];             // url that is used to send the preferences to if requeste
-  char     url_errors[128];            // url that is used to send all the error names 
-  char     url_stream[128];            // url that is used to send stream (fast data to the server)
-
-  uint8_t  light_sleep_enabled;        // light sleep between reads, 0 if disabled, and 1 if enabled and 2 if enabled only after 1 min after boot 
-  uint8_t  sleep_enabled;              // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
-  uint16_t sleep_dur_min;              // how long to go to sleep for each deep sleep 
-  uint16_t sleep_2_send_interval_s;    // seconds to collect data before sending in sleep mode 2 
-  int8_t   sleep_hour_start;           // which hour the device gets to sleep in 24 hour format 
-  int8_t   sleep_hour_end;             // which hour the device is expected to wake up again
-
-  uint16_t store_wind_data_interval_s; // seconds between storing wind data (0 disables; also disables hal/read speed events)
-  uint8_t  send_data_interval_min;     // minutes between data sends 
-  uint8_t  n_send_retries;             // how many times do we retry sending 
-
-  uint8_t  at_timeout_s;               // timeouts for crutical AT commands
-  uint8_t  sim_timeout_s;
-  uint8_t  csq_timeout_s;             
-  uint8_t  creg_timeout_s;  
-  uint8_t  cgreg_timeout_s;  
-
-  uint8_t  error_led_on_time_ms;    // ms error LED stays on when blinking (<=0 disables)
-  uint8_t  dir_led_on_time_ms;      // ms direction LED stays on when blinking (<=0 disables)
-  uint8_t  spin_led_on_time_ms;     // ms spin LED stays on when blinking (<=0 disables)
-  uint8_t  blink_led_on_time_ms;    // ms blink LED stays on when blinking (<=0 disables)
-  uint8_t  blink_led_interval_ds;   // deciseconds (0.1 s) between blink cycles
-
-  uint8_t  as5600_pwr_on_time_ms;   // ms to wait after power on before reading (also an interrupt cycle)
-  uint16_t as5600_read_interval_s;  // seconds between direction reads (0 disables)
-
-  uint16_t wind_log_store_len;      // how many wind data we can store, to be send on the next interaction 
-
-  float  vbat_calib;                // calibration for converting the measured voltage on vbat to the actual voltage
-  float  vsolar_calib;              // calibration for converting the measured voltage on vsolar to the actual voltage
-};
-
-// define default preferences:
-AppPrefs prefs = {
-  /*pref_version*/              0,
-  /*pref_set_date*/             0, 
-  /*load_def_prefs*/            0,      // should be always 0 unless we want to use default preferences every reset
-  /*version*/                   "v2.0",
-
-  /*url_data*/                  "http://46.224.24.144/veter/save/",
-  /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
-  /*url_errors*/                "http://46.224.24.144/veter/save_error/",
-  /*url_stream*/                "http://46.224.24.144/veter/stream/",
-
-  /*light_sleep_enabled*/       2, 
-  /*sleep_enabled*/             0,
-  /*sleep_dur_min*/             60,
-  /*sleep_2_send_interval_s*/   20, 
-  /*sleep_hour_start*/          18,     // time hours
-  /*sleep_hour_end*/            6,      // time hours
-
-  /*store_wind_data_interval_s*/  5,     
-  /*send_data_interval_min*/      10,    
-  /*n_send_retries*/              3,
-
-  /*at_timeout_s*/              10,     
-  /*sim_timeout_s*/             20,     
-  /*csq_timeout_s*/             120,    
-  /*creg_timeout_s*/            120,    
-  /*cgreg_timeout_s*/           120,    
-
-  /*error_led_on_time_ms*/      10,  
-  /*dir_led_on_time_ms*/        10,  
-  /*spin_led_on_time_ms*/       20,  
-  /*blink_led_on_time_ms*/      20,  
-  /*blink_led_interval_ds*/     20,  // deciseconds (0.1 s)
-
-  /*as5600_pwr_on_time_ms*/     20, 
-  /*as5600_read_interval_s*/    3,    
-
-  /*wind_log_store_len*/        600,    
-
-  /*vbat_calib*/                0.0006355, 
-  /*vsolar_calib*/              0.0013187,
-};
-
 
 enum class SendResult : int {
   OK                   =  1,   // success
@@ -170,7 +84,7 @@ enum class SendResult : int {
 
 
 #define ERROR_LED_PIN      36
-//#define ERROR_LED_ON_TIME  10
+//#define ERROR_LED_ON_TIME  10 
 
 //#define VANE_POWER_PIN   1
 
@@ -254,10 +168,14 @@ AS5600 as5600;
 #define AHT20_1_SCL_PIN   9
 AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN, AHT20_1_PWR_PIN, 1);
 
-#define AHT20_2_PWR_PIN   12
-#define AHT20_2_SDA_PIN   11
-#define AHT20_2_SCL_PIN   13
-AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
+//#define AHT20_2_PWR_PIN   12
+//#define AHT20_2_SDA_PIN   11
+//#define AHT20_2_SCL_PIN   13
+//AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
+
+#define HAL_POWER_2_PIN    12
+#define HAL_SENSOR_2_PIN   11
+SpeedHalSensor speedHalSensor2(HAL_SENSOR_2_PIN, HAL_POWER_2_PIN);
 
 SimpleButton buttonInfo;
 SimpleButton buttonSend;
@@ -429,56 +347,7 @@ void savePreferences() {
   store.end();
 }
 
-void printPreferences() {
-  Serial_println("---- Preferences ----");
-  Serial_print("  pref_version:   "); Serial_println(prefs.pref_version);
-  Serial_print("  pref_set_date:  "); Serial_println(getFormattedUnixTime(prefs.pref_set_date));
-  Serial_print("  load_def_prefs: "); Serial_println(prefs.load_def_prefs);
-  Serial_print("  version:    ");      Serial_println(prefs.version);
-  Serial_print("  url_data:   ");  Serial_println(prefs.url_data);
-  Serial_print("  url_prefs:  ");  Serial_println(prefs.url_prefs);
-  Serial_print("  url_errors: ");  Serial_println(prefs.url_errors);
-  Serial_print("  url_stream: ");  Serial_println(prefs.url_stream);
-  Serial_println();
 
-  Serial_print("  light_sleep_enabled:     ");  Serial_println(prefs.light_sleep_enabled);
-  Serial_print("  sleep_enabled:           ");  Serial_println(prefs.sleep_enabled);
-  Serial_print("  sleep_dur_min:           ");  Serial_println(prefs.sleep_dur_min);
-  Serial_print("  sleep_2_send_interval_s: ");  Serial_println(prefs.sleep_2_send_interval_s);
-  Serial_print("  sleep_hour_start:        ");  Serial_println(prefs.sleep_hour_start);
-  Serial_print("  sleep_hour_end:          ");  Serial_println(prefs.sleep_hour_end);
-  Serial_println();
-
-  Serial_print("  store_wind_data_interval_s: "); Serial_println(prefs.store_wind_data_interval_s);
-  Serial_print("  send_data_interval_min:     ");       Serial_println(prefs.send_data_interval_min);
-  Serial_print("  n_send_retries:             ");       Serial_println(prefs.n_send_retries);
-  Serial_println();
-
-  Serial_print("  at_timeout_s:    ");       Serial_println(prefs.at_timeout_s);
-  Serial_print("  sim_timeout_s:   ");       Serial_println(prefs.sim_timeout_s);
-  Serial_print("  csq_timeout_s:   ");       Serial_println(prefs.csq_timeout_s);
-  Serial_print("  creg_timeout_s:  ");       Serial_println(prefs.creg_timeout_s);
-  Serial_print("  cgreg_timeout_s: ");       Serial_println(prefs.cgreg_timeout_s);
-  Serial_println();  
-
-  Serial_print("  error_led_on_time_ms:  ");   Serial_println(prefs.error_led_on_time_ms);
-  Serial_print("  dir_led_on_time_ms:    ");     Serial_println(prefs.dir_led_on_time_ms);
-  Serial_print("  spin_led_on_time_ms:   ");    Serial_println(prefs.spin_led_on_time_ms);
-  Serial_print("  blink_led_on_time_ms:  ");   Serial_println(prefs.blink_led_on_time_ms);
-  Serial_print("  blink_led_interval_ds: ");  Serial_println(prefs.blink_led_interval_ds);
-  Serial_println();
-
-  Serial_print("  as5600_pwr_on_time_ms:   "); Serial_println(prefs.as5600_pwr_on_time_ms);
-  Serial_print("  as5600_read_interval_s: "); Serial_println(prefs.as5600_read_interval_s);
-  Serial_println();
-
-  Serial_print("  wind_log_store_len:   "); Serial_println(prefs.wind_log_store_len);
-  Serial_println();
-
-  Serial_print("  vbat_calib:   ");   Serial_println(String(prefs.vbat_calib, 9));
-  Serial_print("  vsolar_calib: "); Serial_println(String(prefs.vsolar_calib, 9));
-  Serial_println("---------------------");
-}
 
 void errorLedBlink(uint8_t nblinks, uint16_t blinkDelay=200) {
   while(nblinks-- > 0) {
@@ -501,6 +370,11 @@ void checkSensorsConnected() {
     Serial_print("speed hal sensor not connected!");
     errorLedBlink(3, 150);
   }
+
+  if(!speedHalSensor2.isConnected()) {
+    Serial_print("speed hal 2 sensor not connected!");
+    errorLedBlink(3, 150);
+  }
 }
 
 String version = "2.1";
@@ -520,53 +394,6 @@ static void reset_watchdog_timer() {
   pinMode(DONE_PIN, INPUT_PULLDOWN);
 }
 
-static int64_t now_rtc_s() {
-  timeval tv;
-  gettimeofday(&tv, nullptr);
-  return (int64_t)tv.tv_sec;
-}
-
-static void set_system_time_unix(time_t t) {
-  struct timeval tv = {.tv_sec = t, .tv_usec = 0};
-  settimeofday(&tv, nullptr);
-}
-
-static void set_system_time_ymdhms(int y, int mon, int d, int h, int min, int s) {
-  struct tm tmv = {};
-  tmv.tm_year = y - 1900;
-  tmv.tm_mon = mon - 1;
-  tmv.tm_mday = d;
-  tmv.tm_hour = h;
-  tmv.tm_min = min;
-  tmv.tm_sec = s;
-  time_t t = mktime(&tmv);
-  if (t > 0) set_system_time_unix(t);
-}
-
-static bool get_current_tm(struct tm &out) {
-  time_t now_s = (time_t)now_rtc_s();
-  if (now_s <= 0) return false;
-  gmtime_r(&now_s, &out);
-  return true;
-}
-
-static int current_hour() {
-  struct tm tmv;
-  if (!get_current_tm(tmv)) return 0;
-  return tmv.tm_hour;
-}
-
-static int current_minute() {
-  struct tm tmv;
-  if (!get_current_tm(tmv)) return 0;
-  return tmv.tm_min;
-}
-
-static int current_second() {
-  struct tm tmv;
-  if (!get_current_tm(tmv)) return 0;
-  return tmv.tm_sec;
-}
 
 void setup() {
   pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
@@ -663,7 +490,7 @@ void setup() {
   pinMode(SPIN_LED_PIN, OUTPUT);   digitalWrite(SPIN_LED_PIN, LOW);     // off
   pinMode(ERROR_LED_PIN, OUTPUT);  digitalWrite(ERROR_LED_PIN, LOW);    // off
   pinMode(AHT20_1_PWR_PIN, OUTPUT);  digitalWrite(AHT20_1_PWR_PIN, LOW);
-  pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, LOW);
+  // pinMode(AHT20_2_PWR_PIN, OUTPUT);  digitalWrite(AHT20_2_PWR_PIN, LOW);
   pinMode(WAKE_PIN, INPUT_PULLUP);
   pinMode(DONE_PIN, INPUT_PULLDOWN);
   
@@ -677,6 +504,7 @@ void setup() {
   //gpio_set_drive_capability((gpio_num_t) AS5600_POWER_PIN, GPIO_DRIVE_CAP_3);
 
   speedHalSensor.begin();
+  speedHalSensor2.begin();
 
   buttonInfo.begin(BUTTON_INFO_PIN);
   buttonInfo.setClickHandler(clickInfo);
@@ -691,7 +519,7 @@ void setup() {
   Wire.setClock(1000000UL); // 1 Mhz
 
   aht1.init();
-  aht2.init();
+  //aht2.init();
 
   setCpuFrequencyMhz(80);
 
@@ -811,7 +639,7 @@ bool readTempHum(AHT20SoftI2C &ahtSensor, float &t, float &h) {
   int readStatus = 0;
   int retries = 10;
   for(int i=0; i<retries; i++) {
-    readStatus = ahtSensor.aht20_read(t, h);
+    readStatus = ahtSensor.read(t, h);
     //Serial.printf("Read status: %d\r\n", readStatus);
     if(readStatus == 1) break; 
     delay(30);
@@ -1019,47 +847,85 @@ volatile float rps = 0;
 volatile uint32_t rotationCount = 0;
 volatile int lastHalSensorRead = -1;
 volatile uint32_t lastDetection = 0; // we need to store the time of last detection to calculate rotations per second
+volatile float rps2 = 0;
+volatile uint32_t rotationCount2 = 0;
+volatile int lastHalSensorRead2 = -1;
+volatile uint32_t lastDetection2 = 0;
 void IRAM_ATTR onReadHal(void* arg) {
-  // Example logic: latch HAL sensor if triggered
   int halSensorRead = speedHalSensor.read();
-  if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
-    uint32_t now = micros() / 1000;
+  int halSensorRead2 = speedHalSensor2.read();
+  uint32_t now = micros() / 1000;
 
+  if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
     portENTER_CRITICAL_ISR(&timerMux);
     rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
     rotation_detected_blink = 1;
 
-    #ifdef PRINT_SPEED 
+    #ifdef PRINT_SPEED
       Serial_print("|");
     #endif
-    rps += 1000.0f / (now - lastDetection);
+    if(lastDetection != 0 && now > lastDetection) {
+      rps += 1000.0f / (now - lastDetection);
+    }
     portEXIT_CRITICAL_ISR(&timerMux);
-    lastDetection = now; 
+    lastDetection = now;
   }
   lastHalSensorRead = halSensorRead;
+
+  if (halSensorRead2 != lastHalSensorRead2 && halSensorRead2 == LOW) {
+    portENTER_CRITICAL_ISR(&timerMux);
+    rotationCount2++;
+    rotation_detected_blink = 1;
+
+    #ifdef PRINT_SPEED
+      Serial_print("|");
+    #endif
+    if(lastDetection2 != 0 && now > lastDetection2) {
+      rps2 += 1000.0f / (now - lastDetection2);
+    }
+    portEXIT_CRITICAL_ISR(&timerMux);
+    lastDetection2 = now;
+  }
+  lastHalSensorRead2 = halSensorRead2;
 }
 
 
-#define SPEEDS_LOG_LEN 60 
+#define SPEEDS_LOG_LEN 60
 uint16_t speeds_log[SPEEDS_LOG_LEN]; // speed logged each second for a short interval
 volatile int speeds_log_i = 0;
+uint16_t speeds_2_log[SPEEDS_LOG_LEN]; // average speed of both hall sensors logged each second
+volatile int speeds_2_log_i = 0;
 int16_t lastSpeedRead = -1;
+int16_t lastSpeedRead2 = -1;
 
 // read speed every second
 void IRAM_ATTR onReadSpeed(void* arg) {
   portENTER_CRITICAL_ISR(&timerMux);
 
-  float speed =  rotationCount == 0? 0 : rps / rotationCount;
-  #ifdef PRINT_SPEED 
-    Serial_print("Speed: "); Serial_print(speed * 10); 
-    Serial_print(", cnt:"); Serial_println(rotationCount);
+  float speed = rotationCount == 0 ? 0 : rps / rotationCount;
+  float speed2 = rotationCount2 == 0 ? 0 : rps2 / rotationCount2;
+  float avg2Speed = (speed + speed2) / 2.0f;
+  #ifdef PRINT_SPEED
+    Serial_print("Speed: "); Serial_print(speed * 10);
+    Serial_print(", cnt:"); Serial_print(rotationCount);
+    Serial_print(", speed2: "); Serial_print(speed2 * 10);
+    Serial_print(", cnt2:"); Serial_println(rotationCount2);
   #endif
-  rotationCount = 0; 
+  rotationCount = 0;
   rps = 0;
+  rotationCount2 = 0;
+  rps2 = 0;
 
-  if (speeds_log_i < SPEEDS_LOG_LEN){
+  if (speeds_log_i < SPEEDS_LOG_LEN) {
     speeds_log[speeds_log_i++] = int(speed * 10);
     lastSpeedRead = int(speed * 10);
+  } else {
+    elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
+  }
+
+  if (speeds_2_log_i < SPEEDS_LOG_LEN) {
+    speeds_2_log[speeds_2_log_i++] = int(avg2Speed * 10);
+    lastSpeedRead2 = int(speed2 * 10);
   } else {
     elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
   }
@@ -1102,8 +968,9 @@ uint16_t windlog_oldest_index(void) {
 // ---- Public API ------------------------------------------------------------
 
 // Store one record (overwrites the oldest when full)
-void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
+void windlog_push(uint16_t avg, uint16_t avg2, int16_t dir, uint32_t ts) {
     wind_log[w_head].avg  = avg;
+    wind_log[w_head].avg2 = avg2;
     //wind_log[w_head].max  = max;
     wind_log[w_head].dir  = dir;
     //wind_log[w_head].ts = ts;
@@ -1181,8 +1048,16 @@ void IRAM_ATTR onStoreWindData(void* arg) {
     avgSpeedSum += speeds_log[i]; 
   }
 
-  int avgSpeed = avgSpeedSum / speeds_log_i;
+  int avgSpeed = speeds_log_i == 0 ? 0 : avgSpeedSum / speeds_log_i;
   speeds_log_i = 0;
+
+  int avgSpeed2Sum = 0;
+  for(int i=0; i<speeds_2_log_i; i++) {
+    avgSpeed2Sum += speeds_2_log[i];
+  }
+
+  int avgSpeed2 = speeds_2_log_i == 0 ? 0 : avgSpeed2Sum / speeds_2_log_i;
+  speeds_2_log_i = 0;
 
   // if there is no directions_log set the value to -1 so that we know that no value was read
   int16_t avgDir = directions_log_i == 0 ? -1 : average_direction(directions_log, directions_log_i);
@@ -1191,7 +1066,7 @@ void IRAM_ATTR onStoreWindData(void* arg) {
   uint32_t timestamp = get_log_timestamp();;
 
   //windlog_push(avgSpeed, maxSpeed, avgDir, timestamp);
-  windlog_push(avgSpeed, avgDir, timestamp);
+  windlog_push(avgSpeed, avgSpeed2, avgDir, timestamp);
   portEXIT_CRITICAL_ISR(&timerMux);
 
   #ifdef PRINT_ON_STORE_WIND 
@@ -1212,7 +1087,7 @@ String getWindData() {
   //speed_avg_i_on_send = speed_avg_i; // we save the index on when we send the data so we can see if there is any new data when we restart the index after successful send 
 
   if(wind_log_copy_len == 0) {
-    return "len=0;avg=;dir=;logFirst=;logLast=;"; 
+    return "len=0;avg=;avg2=;dir=;logFirst=;logLast=;"; 
   }
 
   String windData = "len=" + String(wind_log_copy_len);
@@ -1221,6 +1096,12 @@ String getWindData() {
   for(int i=1; i<wind_log_copy_len; i++) {
     windData += ",";
     windData += String(wind_log_copy[i].avg);
+  }
+
+  windData += ";avg2=" + String(wind_log_copy[0].avg2);
+  for(int i=1; i<wind_log_copy_len; i++) {
+    windData += ",";
+    windData += String(wind_log_copy[i].avg2);
   }
 
   /*
@@ -1452,26 +1333,32 @@ void fullCycleSend() {
   const int nSendRetrys = prefs.n_send_retries;
   bool sendOk = false;
 
-  temp_in = NAN; hum_in = NAN;
-  bool success = readTempHum(aht1, temp_in, hum_in);
-  if (!success) {
-    elog.log(ErrorLogger::ERR_TEMP_READ);
-  } else {
-    Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
-    Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
-  }
-
+  temp_in = NAN;  hum_in = NAN;
   temp_out = NAN; hum_out = NAN;
-  success = readTempHum(aht2, temp_out, hum_out);
-  if (!success) {
-    elog.log(ErrorLogger::ERR_TEMP_READ);
+
+  if (prefs.read_temp_enabled == 1) {
+    bool tempReadSuccess = false;
+    /*
+    tempReadSuccess = readTempHum(aht1, temp_in, hum_in);
+    if (!tempReadSuccess) {
+      elog.log(ErrorLogger::ERR_TEMP_READ);
+    } else {
+      Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
+      Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
+    }
+    */
+
+    tempReadSuccess = readTempHum(aht1, temp_out, hum_out);
+    if (!tempReadSuccess) {
+      elog.log(ErrorLogger::ERR_TEMP_READ);
+    } else {
+      Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
+      Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
+    }
   } else {
-    Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
-    Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
+    Serial_println("Temperature reading disabled by prefs.read_temp_enabled");
   }
-
-
-
+  
   hasSendAfterTurnOn = true; // we tried sending!
   for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
     Serial_print("Sending try n:"); Serial_println(nTry);
@@ -1521,23 +1408,27 @@ void printDiagnosticInfo() {
   //Serial_print("v batt raw:  "); Serial_println(analogRead(V_BATT_PIN)); 
   //Serial_print("v solar raw: "); Serial_println(analogRead(V_SOALR_PIN));
 
+  bool success;
+  /*
   temp_in = NAN; hum_in = NAN;
-  bool success = readTempHum(aht1, temp_in, hum_in);
+  success = readTempHum(aht1, temp_in, hum_in);
   if (!success) {
     Serial_println("temp1 failed to read"); 
   } else {
     Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
     Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
   }
-
+  */
+  
   temp_out = NAN; hum_out = NAN;
-  success = readTempHum(aht2, temp_out, hum_out);
+  success = readTempHum(aht1, temp_out, hum_out);
   if (!success) {
     Serial_println("temp2 failed to read"); 
   } else {
     Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
     Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
   }
+  
 
   // Serial_println("wind data: " + getWindData());
   // TODO implement idk Serial_println("last_dir_read: " + String(last_direction_read));
@@ -1726,28 +1617,6 @@ bool parseCGREGResponse(const String& response) {
   return status == 1 || status == 5; // Registered (home or roaming)
 }
 
-String getFormattedTimeLibString() {
-  struct tm tmv;
-  if (!get_current_tm(tmv)) return "1970-01-01 00:00:00";
-  char buf[24];
-  snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
-           tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-           tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
-  return String(buf);
-}
-
-String getFormattedUnixTime(uint32_t unix_time) {
-    time_t t = (time_t)unix_time;
-    struct tm tmv;
-    gmtime_r(&t, &tmv);
-
-    char buf[24];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d_%02d:%02d:%02d", // we print with _ because this function is used in post body
-             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-             tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
-
-    return String(buf);
-}
 
 String imsiNum; 
 
@@ -1875,124 +1744,6 @@ bool parseCCLKResponse(const String& response) {
   return true;
 }
 
-/*
-Parse the response data:
-The expected payload is: 
-saved: <num written>\n
-params:\n
-<param name>:<param_value>\n
-<param name>:<param_value>\n
-<param name>:<param_value>\n
-<param name>:<param_value>\n
-*/
-bool saveNewPrefValue(String key, String value) {
-  Serial_print("Saving the new pref: '");
-  Serial_print(key); Serial_print("':'"); Serial_print(value); Serial_println("'");
-
-  if(key == "pref_version") {
-    prefs.pref_version = value.toInt();
-  } 
-  else if(key == "version") {
-    value.toCharArray(prefs.version, sizeof(prefs.version));
-  } 
-  else if(key == "load_def_prefs") {
-    prefs.load_def_prefs = value.toInt();
-  }
-  else if(key == "url_data") {
-    value.toCharArray(prefs.url_data, sizeof(prefs.url_data));
-  }
-  else if(key == "url_prefs") {
-    value.toCharArray(prefs.url_prefs, sizeof(prefs.url_prefs));
-  }
-  else if(key == "url_errors") {
-    value.toCharArray(prefs.url_errors, sizeof(prefs.url_errors));
-  }
-  else if(key == "url_stream") {
-    value.toCharArray(prefs.url_stream, sizeof(prefs.url_stream));
-  }
-  else if(key == "store_wind_data_interval_s") {
-    prefs.store_wind_data_interval_s = value.toInt();
-  }
-  else if(key == "error_led_on_time_ms") {
-    prefs.error_led_on_time_ms = value.toInt();
-  }
-  else if(key == "dir_led_on_time_ms") {
-    prefs.dir_led_on_time_ms = value.toInt();
-  }
-  else if(key == "spin_led_on_time_ms") {
-    prefs.spin_led_on_time_ms = value.toInt();
-  }
-  else if(key == "as5600_pwr_on_time_ms") {
-    prefs.as5600_pwr_on_time_ms = value.toInt();
-  }
-  else if(key == "as5600_read_interval_s") {
-    prefs.as5600_read_interval_s = value.toInt();
-  }
-  else if(key == "light_sleep_enabled") {
-    prefs.light_sleep_enabled = value.toInt();
-  } 
-  else if(key == "sleep_enabled") {
-    prefs.sleep_enabled = value.toInt();
-  } 
-  else if(key == "sleep_dur_min") {
-    prefs.sleep_dur_min = value.toInt();
-  }
-  else if(key == "sleep_2_send_interval_s") {
-    prefs.sleep_2_send_interval_s = value.toInt();
-  }
-  else if(key == "sleep_hour_start") {
-    prefs.sleep_hour_start = value.toInt();
-  } 
-  else if(key == "sleep_hour_end") {
-    prefs.sleep_hour_end = value.toInt();
-  }
-  else if(key == "blink_led_on_time_ms") {
-    prefs.blink_led_on_time_ms = value.toInt();
-  } 
-  else if(key == "blink_led_interval_ds") {
-    prefs.blink_led_interval_ds = value.toInt();
-  }
-  else if(key == "send_data_interval_min") {
-    prefs.send_data_interval_min = value.toInt();
-  }
-  else if(key == "n_send_retries") {
-    prefs.n_send_retries = value.toInt();
-  }
-  else if(key == "at_timeout_s") {
-    prefs.at_timeout_s = value.toInt();
-  }
-  else if(key == "sim_timeout_s") {
-    prefs.sim_timeout_s = value.toInt();
-  }
-  else if(key == "csq_timeout_s") {
-    prefs.csq_timeout_s = value.toInt();
-  }
-  else if(key == "creg_timeout_s") {
-    prefs.creg_timeout_s = value.toInt();
-  }
-  else if(key == "cgreg_timeout_s") {
-    prefs.cgreg_timeout_s = value.toInt();
-  }
-  else if(key == "vbat_calib") {
-    prefs.vbat_calib = value.toFloat();
-  }
-  else if(key == "vsolar_calib") {
-    prefs.vsolar_calib = value.toFloat();
-  }
-  else if(key == "wind_log_store_len") {
-    prefs.wind_log_store_len = value.toInt();
-  }
-
-
-  else {
-    Serial_print("Unable to find the prefs key: '"); Serial_print(key); Serial_println("'");
-    return false; // no new key was set
-  }
-
-  return true; // a new prefs key was set
-}
-
-
 Preferences prefsStorage;
 static const char *PREF_NAMESPACE = "time";
 static const uint32_t ESTIMATED_RESET_SECONDS = 2; 
@@ -2029,6 +1780,17 @@ void restoreTimeIfScheduledReset() {
         Serial_println("No scheduled reset time to restore.");
     }
 }
+
+/*
+Parse the response data:
+The expected payload is: 
+saved: <num written>\n
+params:\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+<param name>:<param_value>\n
+*/
 
 bool shouldSendPrefs = false; 
 bool shouldSendErrorNames = false; 
@@ -2211,58 +1973,6 @@ String getPostBody() {
   return body;
 }
 
-String getPostBodyPrefs() {
-  String body;
-  body.reserve(1024);   // avoid fragmentation, improve speed
-
-  body += "compiled_on=" + getFormattedUnixTime(BUILD_UNIX_TIME) + ";";
-  body += "pref_version=" + String(prefs.pref_version) + ";";
-  body += "pref_set_date=" + getFormattedUnixTime(prefs.pref_set_date) + ";";
-  body += "load_def_prefs=" + String(prefs.load_def_prefs) + ";";
-  body += "version=" + String(prefs.version) + ";";
-  body += "url_data=" + String(prefs.url_data) + ";";
-  body += "url_prefs=" + String(prefs.url_prefs) + ";";
-  body += "url_errors=" + String(prefs.url_errors) + ";";
-  body += "url_stream=" + String(prefs.url_stream) + ";";
-
-  body += "light_sleep_enabled=" + String(prefs.light_sleep_enabled) + ";";
-  body += "sleep_enabled=" + String(prefs.sleep_enabled) + ";";
-  body += "sleep_dur_min=" + String(prefs.sleep_dur_min) + ";";
-  body += "sleep_2_send_interval_s=" + String(prefs.sleep_2_send_interval_s) + ";";
-  body += "sleep_hour_start=" + String(prefs.sleep_hour_start) + ";";
-  body += "sleep_hour_end=" + String(prefs.sleep_hour_end) + ";";
-
-  body += "store_wind_data_interval_s=" + String(prefs.store_wind_data_interval_s) + ";";
-  body += "send_data_interval_min=" + String(prefs.send_data_interval_min) + ";";
-  body += "n_send_retries=" + String(prefs.n_send_retries) + ";";
-
-  body += "at_timeout_s=" + String(prefs.at_timeout_s) + ";";
-  body += "sim_timeout_s=" + String(prefs.sim_timeout_s) + ";";
-  body += "csq_timeout_s=" + String(prefs.csq_timeout_s) + ";";
-  body += "creg_timeout_s=" + String(prefs.creg_timeout_s) + ";";
-  body += "cgreg_timeout_s=" + String(prefs.cgreg_timeout_s) + ";";
-
-  body += "error_led_on_time_ms=" + String(prefs.error_led_on_time_ms) + ";";
-  body += "dir_led_on_time_ms=" + String(prefs.dir_led_on_time_ms) + ";";
-  body += "spin_led_on_time_ms=" + String(prefs.spin_led_on_time_ms) + ";";
-  body += "blink_led_on_time_ms=" + String(prefs.blink_led_on_time_ms) + ";";
-  body += "blink_led_interval_ds=" + String(prefs.blink_led_interval_ds) + ";";
-
-  body += "as5600_pwr_on_time_ms=" + String(prefs.as5600_pwr_on_time_ms) + ";";
-  body += "as5600_read_interval_s=" + String(prefs.as5600_read_interval_s) + ";";
-
-  body += "wind_log_store_len=" + String(prefs.wind_log_store_len) + ";";
-
-  body += "vbat_calib=" + String(prefs.vbat_calib) + ";";
-  body += "vsolar_calib=" + String(prefs.vsolar_calib) + ";";
-
-  body += "imsi=" + imsiNum + ";";
-  body += "phoneNum=" + phoneNum + ";";
-  body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
-
-  return body;
-}
-
 String getPostErrorsList() {
   String body;
   body.reserve(768);
@@ -2424,6 +2134,13 @@ void sendStream(int durationSec) {
 
 }
 
+String getPostBodyPrefsAll() {
+  String body = getPostBodyPrefs();
+  body += "imsi=" + imsiNum + ";";
+  body += "phoneNum=" + phoneNum + ";";
+  return body;
+}
+
 
 SendResult runHttpGetHot(int nTry) {
   Serial_println("\n\nExecuting HTTP HOT...");
@@ -2510,7 +2227,7 @@ SendResult runHttpGetHot(int nTry) {
     sendPrefsOnNextSend = false;
     Serial_println();
     Serial_println("Sending preferences");
-    bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefs());
+    bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefsAll());
     if (!postSuccess) {
       Serial_print("Sending preferences failed!");
       elog.log(ErrorLogger::ERR_SEND_PREFS_HTTP_FAIL);
@@ -2579,7 +2296,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
 
 
 

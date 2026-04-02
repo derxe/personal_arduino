@@ -1,5 +1,5 @@
-#define HAL_SENSOR_PIN 11 //7
-#define HAL_POWER_PIN  12 //6
+#define HAL_SENSOR_PIN 7 //11 //7
+#define HAL_POWER_PIN  6 //12 //6
 #define SPIN_LED_PIN   38
 
 #define TX_PIN  39
@@ -34,7 +34,7 @@ void updateBlink()
 
 void setup()
 {
-    Serial.begin(921600, SERIAL_8N1, TX_PIN, TX_PIN);
+    Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
     while (!Serial) delay(1);
 
     Serial.println("Program start");
@@ -96,6 +96,10 @@ void loop()
 
     bool currentState = digitalRead(HAL_SENSOR_PIN);
 
+    if (lastSensorState != currentState && currentState == HIGH) {
+        //Serial.print("|");
+    }
+
     if (lastSensorState != currentState) {
         uint32_t nowUs = micros();
 
@@ -103,6 +107,7 @@ void loop()
             events[eventCount].state = currentState;
             events[eventCount].dtUs = nowUs - prevEdgeUs;
             eventCount++;
+            Serial.printf("%3d ms:%6lu\r\n", currentState, (nowUs - prevEdgeUs)/1000);
         }
 
         prevEdgeUs = nowUs;
@@ -112,13 +117,13 @@ void loop()
 
     if (millis() - lastPrint >= 1000) {
         lastPrint = millis();
+        //Serial.println();
+        //for (uint8_t i = 0; i < eventCount; i++) {
+        //    Serial.printf("%3d us:%6lu ", events[i].state, events[i].dtUs);
+        //    if (events[i].state == 0) Serial.println();
+        // }
 
-        for (uint8_t i = 0; i < eventCount; i++) {
-            Serial.printf("%3d us:%6lu ", events[i].state, events[i].dtUs);
-            if (events[i].state == 0) Serial.println();
-        }
-
-        if (eventCount > 0) Serial.println();
+        //if (eventCount > 0) Serial.println();
         eventCount = 0;
     }
 }

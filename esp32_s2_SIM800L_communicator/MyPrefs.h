@@ -126,13 +126,14 @@ struct AppPrefs {
   uint8_t  sleep_enabled;              // 0 if disabled, and 1 if enabled, 2 sends data once after each sleep cycle 
   uint16_t sleep_dur_min;              // how long to go to sleep for each deep sleep 
   uint16_t sleep_2_send_interval_s;    // seconds to collect data before sending in sleep mode 2 
-  int8_t   sleep_hour_start;           // which hour the device gets to sleep in 24 hour format 
+  int8_t   sleep_hour_start;           // which hour the device gets to sleep in 24 hour format, if start and stop is set to 100 the device is in sleep mode all the time 
   int8_t   sleep_hour_end;             // which hour the device is expected to wake up again
 
   uint16_t store_wind_data_interval_s; // seconds between storing wind data (0 disables; also disables hal/read speed events)
-  uint8_t  read_temp_enabled;          // 0 disables temp1/temp2 reads during send, 1 enables temp 1 2 enables temp2 and 3 enables both of them
   uint8_t  send_data_interval_min;     // minutes between data sends 
   uint8_t  n_send_retries;             // how many times do we retry sending 
+  uint16_t wind_log_store_len;         // how many wind data we can store, to be send on the next interaction 
+
 
   uint8_t  at_timeout_s;               // timeouts for crutical AT commands
   uint8_t  sim_timeout_s;
@@ -149,7 +150,7 @@ struct AppPrefs {
   uint8_t  as5600_pwr_on_time_ms;   // ms to wait after power on before reading (also an interrupt cycle)
   uint16_t as5600_read_interval_s;  // seconds between direction reads (0 disables)
 
-  uint16_t wind_log_store_len;      // how many wind data we can store, to be send on the next interaction 
+  uint8_t  read_temp_enabled;       // 0 disables temp1/temp2 reads during send, 1-enables temp 1, 2-enables temp2, 3-enables both of them
 
   float  vbat_calib;                // calibration for converting the measured voltage on vbat to the actual voltage
   float  vsolar_calib;              // calibration for converting the measured voltage on vsolar to the actual voltage
@@ -175,9 +176,9 @@ AppPrefs prefs = {
   /*sleep_hour_end*/            6,      // time hours
 
   /*store_wind_data_interval_s*/  5,     
-  /*read_temp_enabled*/           1,
   /*send_data_interval_min*/      10,    
   /*n_send_retries*/              3,
+  /*wind_log_store_len*/          600,    
 
   /*at_timeout_s*/              10,     
   /*sim_timeout_s*/             20,     
@@ -194,7 +195,7 @@ AppPrefs prefs = {
   /*as5600_pwr_on_time_ms*/     20, 
   /*as5600_read_interval_s*/    3,    
 
-  /*wind_log_store_len*/        600,    
+  /*read_temp_enabled*/         3,
 
   /*vbat_calib*/                0.0006355, 
   /*vsolar_calib*/              0.0013187,
@@ -221,7 +222,7 @@ void printPreferences() {
   Serial_println();
 
   Serial_print("  store_wind_data_interval_s: "); Serial_println(prefs.store_wind_data_interval_s);
-  Serial_print("  read_temp_enabled:          "); Serial_println(prefs.read_temp_enabled);
+  Serial_print("  wind_log_store_len:   "); Serial_println(prefs.wind_log_store_len);
   Serial_print("  send_data_interval_min:     "); Serial_println(prefs.send_data_interval_min);
   Serial_print("  n_send_retries:             "); Serial_println(prefs.n_send_retries);
   Serial_println();
@@ -244,7 +245,7 @@ void printPreferences() {
   Serial_print("  as5600_read_interval_s: "); Serial_println(prefs.as5600_read_interval_s);
   Serial_println();
 
-  Serial_print("  wind_log_store_len:   "); Serial_println(prefs.wind_log_store_len);
+  Serial_print("  read_temp_enabled:          "); Serial_println(prefs.read_temp_enabled);
   Serial_println();
 
   Serial_print("  vbat_calib:   ");   Serial_println(String(prefs.vbat_calib, 9));

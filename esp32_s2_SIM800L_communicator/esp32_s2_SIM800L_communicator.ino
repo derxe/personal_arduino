@@ -26,11 +26,9 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #include "FloatRunningAverage.h"
 #include <string.h>  // for memcpy
 #include "AHT20_SoftI2C.h"
-#include "esp_task_wdt.h"
 
 typedef struct {
     uint16_t avg;
-    uint16_t avg2;
     //uint16_t max; // we dont need to log max speed
     int16_t dir;      // from 0 - 360, negative values for errors 
     //uint16_t ts;   // we only log last and first log instead of logging every timestamp
@@ -168,14 +166,10 @@ AS5600 as5600;
 #define AHT20_1_SCL_PIN   9
 AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN, AHT20_1_PWR_PIN, 1);
 
-//#define AHT20_2_PWR_PIN   12
-//#define AHT20_2_SDA_PIN   11
-//#define AHT20_2_SCL_PIN   13
-//AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
-
-#define HAL_POWER_2_PIN    12
-#define HAL_SENSOR_2_PIN   11
-SpeedHalSensor speedHalSensor2(HAL_SENSOR_2_PIN, HAL_POWER_2_PIN);
+#define AHT20_2_PWR_PIN   12
+#define AHT20_2_SDA_PIN   11
+#define AHT20_2_SCL_PIN   13
+AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
 
 SimpleButton buttonInfo;
 SimpleButton buttonSend;
@@ -258,7 +252,7 @@ void printAS5600Config() {
   Serial_print(F("Angle: ")); Serial_println(as.readAngle());
   Serial_println();
 
-  digitalWrite(AS5600_POWER_PIN, LOW);  
+  setPowerDirectionSensor(false); 
   //portEXIT_CRITICAL(&timerMux);
 }
 
@@ -371,20 +365,17 @@ void checkSensorsConnected() {
     errorLedBlink(3, 150);
   }
 
-  if(!speedHalSensor2.isConnected()) {
-    Serial_print("speed hal 2 sensor not connected!");
-    errorLedBlink(3, 150);
-  }
 }
 
 String version = "2.1";
 bool accurateTimeSet = false;
 bool hasSendAfterTurnOn = false; 
 
+volatile bool enableWatchDogResets = true;
 
 // gets called each 5 seconds and resets the external watchdog timer
 void IRAM_ATTR onResetWatchdogTimer(void* arg) {
-  reset_watchdog_timer();
+  if(enableWatchDogResets) reset_watchdog_timer();
 }
 
 static void reset_watchdog_timer() {
@@ -432,14 +423,6 @@ void setup() {
     case ESP_RST_DEEPSLEEP:                
       break;
   }
-
-  esp_task_wdt_config_t twdt_config = {
-    .timeout_ms = 10*1000, // 10 seconds watchdog timout
-    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,    // Bitmask of all cores
-    .trigger_panic = true,
-	};
-  ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&twdt_config));
-  esp_task_wdt_add(NULL);
 
   //Serial.begin(115200);
 
@@ -504,8 +487,6 @@ void setup() {
   //gpio_set_drive_capability((gpio_num_t) AS5600_POWER_PIN, GPIO_DRIVE_CAP_3);
 
   speedHalSensor.begin();
-  speedHalSensor2.begin();
-
   buttonInfo.begin(BUTTON_INFO_PIN);
   buttonInfo.setClickHandler(clickInfo);
 
@@ -796,7 +777,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
     } while(as5600_error != 0 && --readRepeats > 0);
 
     int magMagnitude = as5600.readMagnitude();
-    if(magMagnitude < 25) {
+    if(magMagnitude < 20) {
       as5600_error = 10; // random error number that is not already used by the as5600 lib, not important as long as it not 0
       elog.logTmp(ErrorLogger::ERR_DIR_MAG_WEAK);
       DBG_MNG( Serial_print("Magnet to weak < 50: mag:"); Serial_println(magMagnitude); );
@@ -847,13 +828,8 @@ volatile float rps = 0;
 volatile uint32_t rotationCount = 0;
 volatile int lastHalSensorRead = -1;
 volatile uint32_t lastDetection = 0; // we need to store the time of last detection to calculate rotations per second
-volatile float rps2 = 0;
-volatile uint32_t rotationCount2 = 0;
-volatile int lastHalSensorRead2 = -1;
-volatile uint32_t lastDetection2 = 0;
 void IRAM_ATTR onReadHal(void* arg) {
   int halSensorRead = speedHalSensor.read();
-  int halSensorRead2 = speedHalSensor2.read();
   uint32_t now = micros() / 1000;
 
   if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
@@ -872,60 +848,29 @@ void IRAM_ATTR onReadHal(void* arg) {
   }
   lastHalSensorRead = halSensorRead;
 
-  if (halSensorRead2 != lastHalSensorRead2 && halSensorRead2 == LOW) {
-    portENTER_CRITICAL_ISR(&timerMux);
-    rotationCount2++;
-    rotation_detected_blink = 1;
-
-    #ifdef PRINT_SPEED
-      Serial_print("|");
-    #endif
-    if(lastDetection2 != 0 && now > lastDetection2) {
-      rps2 += 1000.0f / (now - lastDetection2);
-    }
-    portEXIT_CRITICAL_ISR(&timerMux);
-    lastDetection2 = now;
-  }
-  lastHalSensorRead2 = halSensorRead2;
 }
 
 
 #define SPEEDS_LOG_LEN 60
 uint16_t speeds_log[SPEEDS_LOG_LEN]; // speed logged each second for a short interval
 volatile int speeds_log_i = 0;
-uint16_t speeds_2_log[SPEEDS_LOG_LEN]; // average speed of both hall sensors logged each second
-volatile int speeds_2_log_i = 0;
 int16_t lastSpeedRead = -1;
-int16_t lastSpeedRead2 = -1;
 
 // read speed every second
 void IRAM_ATTR onReadSpeed(void* arg) {
   portENTER_CRITICAL_ISR(&timerMux);
 
   float speed = rotationCount == 0 ? 0 : rps / rotationCount;
-  float speed2 = rotationCount2 == 0 ? 0 : rps2 / rotationCount2;
-  float avg2Speed = (speed + speed2) / 2.0f;
   #ifdef PRINT_SPEED
     Serial_print("Speed: "); Serial_print(speed * 10);
-    Serial_print(", cnt:"); Serial_print(rotationCount);
-    Serial_print(", speed2: "); Serial_print(speed2 * 10);
-    Serial_print(", cnt2:"); Serial_println(rotationCount2);
+    Serial_print(", cnt:"); Serial_println(rotationCount);
   #endif
   rotationCount = 0;
   rps = 0;
-  rotationCount2 = 0;
-  rps2 = 0;
 
   if (speeds_log_i < SPEEDS_LOG_LEN) {
     speeds_log[speeds_log_i++] = int(speed * 10);
     lastSpeedRead = int(speed * 10);
-  } else {
-    elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
-  }
-
-  if (speeds_2_log_i < SPEEDS_LOG_LEN) {
-    speeds_2_log[speeds_2_log_i++] = int(avg2Speed * 10);
-    lastSpeedRead2 = int(speed2 * 10);
   } else {
     elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
   }
@@ -968,9 +913,8 @@ uint16_t windlog_oldest_index(void) {
 // ---- Public API ------------------------------------------------------------
 
 // Store one record (overwrites the oldest when full)
-void windlog_push(uint16_t avg, uint16_t avg2, int16_t dir, uint32_t ts) {
+void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
     wind_log[w_head].avg  = avg;
-    wind_log[w_head].avg2 = avg2;
     //wind_log[w_head].max  = max;
     wind_log[w_head].dir  = dir;
     //wind_log[w_head].ts = ts;
@@ -1051,14 +995,6 @@ void IRAM_ATTR onStoreWindData(void* arg) {
   int avgSpeed = speeds_log_i == 0 ? 0 : avgSpeedSum / speeds_log_i;
   speeds_log_i = 0;
 
-  int avgSpeed2Sum = 0;
-  for(int i=0; i<speeds_2_log_i; i++) {
-    avgSpeed2Sum += speeds_2_log[i];
-  }
-
-  int avgSpeed2 = speeds_2_log_i == 0 ? 0 : avgSpeed2Sum / speeds_2_log_i;
-  speeds_2_log_i = 0;
-
   // if there is no directions_log set the value to -1 so that we know that no value was read
   int16_t avgDir = directions_log_i == 0 ? -1 : average_direction(directions_log, directions_log_i);
   directions_log_i = 0;
@@ -1066,12 +1002,11 @@ void IRAM_ATTR onStoreWindData(void* arg) {
   uint32_t timestamp = get_log_timestamp();;
 
   //windlog_push(avgSpeed, maxSpeed, avgDir, timestamp);
-  windlog_push(avgSpeed, avgSpeed2, avgDir, timestamp);
+  windlog_push(avgSpeed, avgDir, timestamp);
   portEXIT_CRITICAL_ISR(&timerMux);
 
   #ifdef PRINT_ON_STORE_WIND 
     Serial_print("Updated wind data, avg:"); Serial_print(avgSpeed);
-    Serial_print(", max:"); Serial_print(maxSpeed);
     Serial_print(", dir:"); Serial_print(avgDir);
     Serial_println();
   #endif
@@ -1087,7 +1022,7 @@ String getWindData() {
   //speed_avg_i_on_send = speed_avg_i; // we save the index on when we send the data so we can see if there is any new data when we restart the index after successful send 
 
   if(wind_log_copy_len == 0) {
-    return "len=0;avg=;avg2=;dir=;logFirst=;logLast=;"; 
+    return "len=0;avg=;dir=;logFirst=;logLast=;"; 
   }
 
   String windData = "len=" + String(wind_log_copy_len);
@@ -1097,20 +1032,6 @@ String getWindData() {
     windData += ",";
     windData += String(wind_log_copy[i].avg);
   }
-
-  windData += ";avg2=" + String(wind_log_copy[0].avg2);
-  for(int i=1; i<wind_log_copy_len; i++) {
-    windData += ",";
-    windData += String(wind_log_copy[i].avg2);
-  }
-
-  /*
-  windData += ";max=" + String(wind_log_copy[0].max);
-  for(int i=1; i<wind_log_copy_len; i++) {
-    windData += ",";
-    windData += String(wind_log_copy[i].max);
-  }
-  */
 
   windData += ";dir=" + String(wind_log_copy[0].dir);
   for(int i=1; i<wind_log_copy_len; i++) {
@@ -1125,6 +1046,7 @@ String getWindData() {
 
 
 bool isSleepHour(int start, int end, int hour) {
+  if (start == 100 && end == 100) return true; // special case where we force the device to sleep all the time to basically never wake up
   if (start > end) 
     return start <= hour || hour < end;
   else
@@ -1217,7 +1139,6 @@ void loop() {
   buttonSend.loop();
 
   evaluateIfDeepSleep();
-  esp_task_wdt_reset();
 
   static uint32_t lastPrint = 0;
   static uint32_t lastVBattIdeLog = 0;
@@ -1319,6 +1240,9 @@ float hum_out = NAN;
 
 bool isOn = false;
 void clickInfo() {
+  enableWatchDogResets = !enableWatchDogResets;
+  Serial_print("Watchdog enabled: "); Serial_println(enableWatchDogResets);
+  
   printPreferences();
   printDiagnosticInfo();
 }
@@ -1327,18 +1251,14 @@ void clickSend() {
   fullCycleSend();
 }
 
-void fullCycleSend() {
-  esp_task_wdt_delete(NULL);
+void readTempSensors() {
+  temp_in = NAN;  
+  hum_in = NAN;
+  temp_out = NAN; 
+  hum_out = NAN;
+  bool tempReadSuccess = false;
 
-  const int nSendRetrys = prefs.n_send_retries;
-  bool sendOk = false;
-
-  temp_in = NAN;  hum_in = NAN;
-  temp_out = NAN; hum_out = NAN;
-
-  if (prefs.read_temp_enabled == 1) {
-    bool tempReadSuccess = false;
-    /*
+  if (prefs.read_temp_enabled & 0x01 > 0) {
     tempReadSuccess = readTempHum(aht1, temp_in, hum_in);
     if (!tempReadSuccess) {
       elog.log(ErrorLogger::ERR_TEMP_READ);
@@ -1346,8 +1266,12 @@ void fullCycleSend() {
       Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
       Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
     }
-    */
+  } else {
+    Serial_print("Temperature INside reading disabled by prefs.read_temp_enabled:");
+    Serial_println(prefs.read_temp_enabled);
+  }
 
+  if (prefs.read_temp_enabled & 0x02 > 0) {
     tempReadSuccess = readTempHum(aht1, temp_out, hum_out);
     if (!tempReadSuccess) {
       elog.log(ErrorLogger::ERR_TEMP_READ);
@@ -1356,8 +1280,19 @@ void fullCycleSend() {
       Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
     }
   } else {
-    Serial_println("Temperature reading disabled by prefs.read_temp_enabled");
+    Serial_print("Temperature OUTside reading disabled by prefs.read_temp_enabled:");
+    Serial_println(prefs.read_temp_enabled);
   }
+
+}
+
+
+void fullCycleSend() {
+  const int nSendRetrys = prefs.n_send_retries;
+  bool sendOk = false;
+
+  // before sending read temeprature sensors
+  readTempSensors();
   
   hasSendAfterTurnOn = true; // we tried sending!
   for(int nTry=0; nTry<nSendRetrys && !sendOk; nTry++) {
@@ -1389,8 +1324,6 @@ void fullCycleSend() {
     turnOffModule();
     delay(1000);
   } 
-
-  esp_task_wdt_add(NULL);
 }
 
 void printDiagnosticInfo() {
@@ -2296,7 +2229,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
 
 
 

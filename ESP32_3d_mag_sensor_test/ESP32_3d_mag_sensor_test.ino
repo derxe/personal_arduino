@@ -9,28 +9,32 @@
 //  Optionally adjust the code.
 
 
-#include "TLx493D_inc.hpp"
+//#include "TLx493D_inc.hpp"
+//using namespace ifx::tlx493d;
+//TLx493D_A1B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
 
-using namespace ifx::tlx493d;
-
-TLx493D_A1B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
+#include "3d_mag_dir_sensor.h"
 
 #define SDA_PIN             4
 #define SCL_PIN             3      
 #define POWER_PIN           5
 
+MagDirSensor3D sensor(SDA_PIN, SCL_PIN, POWER_PIN);
+
 #define UART_TX_PIN  39
 #define UART_RX_PIN  37 
 
+
 static bool readLowPowerSample(double *x, double *y, double *z, double *t) {
   for (uint8_t attempt = 0; attempt < 5; ++attempt) {
-    dut.getMagneticFieldAndTemperature(x, y, z, t);
-    if (dut.hasValidData()) return true;
+    //dut.getMagneticFieldAndTemperature(x, y, z, t);
+    //if (dut.hasValidData()) return true;
     delayMicroseconds(500);
   }
 
   return false;
 }
+
 
 void setup()   
 {
@@ -45,13 +49,16 @@ void setup()
 
 
   //Wire.begin();
-  Wire1.begin(SDA_PIN, SCL_PIN, 4000000);
+  //Wire1.begin(SDA_PIN, SCL_PIN, 4000000);
 
-  dut.begin();
-  dut.setPowerMode(TLx493D_LOW_POWER_MODE_e);
+  //dut.begin();
+  //dut.setPowerMode(TLx493D_LOW_POWER_MODE_e);
+
+  sensor.begin(1000000UL);
 
   delay(1000);
 }
+
 
 float calcAngle(float x, float y, float z) {
     (void)y; // ignore y
@@ -70,10 +77,47 @@ float calcMagnetPower(float x, float y, float z) {
     return sqrtf(x * x + z * z);
 }
 
+
 float dir;
 float power;
 
-void loop()
+void loop() {
+  static uint32_t lastTime = 0;
+  static float prevDir = -1;
+
+  if (millis() - lastTime >= 300) {
+    lastTime = millis();
+
+    
+    if(!sensor.isConnected()) {
+      Serial1.println("Sensor not connected!");
+      return;
+    }
+
+    
+    sensor.enablePower(true);
+    uint32_t startTime = micros();
+    if(!sensor.read()) {
+      Serial1.println("Sensor read failed!");
+      return;
+    }
+    //sensor.enablePower(false);
+
+     
+    //delay(2);
+    
+    int direction = sensor.getDirection();
+    power = sensor.getPower();
+    
+
+    uint32_t endTime = micros();
+    Serial1.printf("Communication time: %d us\r\n", endTime - startTime);
+    Serial1.printf("dir:%3d power:%0.4f \r\n", direction, power);
+  }
+
+}
+
+void loop2()
 {
   static uint32_t lastTime = 0;
   static float prevDir = -1;
@@ -96,14 +140,14 @@ void loop()
     lastTimeSpeed = millis();
 
        
-    Serial1.printf("dir:%3d total_rotation:%5.2f power:%0.4f speed:%4.1f n_samples:%5d\r\n", (int)(dir*360), total_rotation, power, speed,nSamplesPrint);
-    Serial.printf( "dir:%3d total_rotation:%5.2f power:%0.4f speed:%4.1f n_samples:%d\r\n", (int)(dir*360), total_rotation, power, speed, nSamplesPrint);
+    //Serial1.printf("dir:%3d total_rotation:%5.2f power:%0.4f speed:%4.1f n_samples:%5d\r\n", (int)(dir*360), total_rotation, power, speed,nSamplesPrint);
+    //Serial.printf( "dir:%3d total_rotation:%5.2f power:%0.4f speed:%4.1f n_samples:%d\r\n", (int)(dir*360), total_rotation, power, speed, nSamplesPrint);
   }
 
 
   //  update every 100 ms
   //  should be enough up to ~200 RPM
-  if (millis() - lastTime >= 20)
+  if (millis() - lastTime >= 200)
   {
     lastTime = millis();
     double t, x, y, z;
@@ -114,11 +158,11 @@ void loop()
       
 
     // print the communication time with the sensor every 100 samples
-    if(millis() - lastTimePrint >= 500) {
-       Serial.printf("Communication time: %d us\r\n", endTime - startTime);
-       Serial1.printf("Communication time: %d us\r\n", endTime - startTime);
-       lastTimePrint = millis();
-    }
+    //if(millis() - lastTimePrint >= 500) {
+    //   Serial.printf("Communication time: %d us\r\n", endTime - startTime);
+    //   Serial1.printf("Communication time: %d us\r\n", endTime - startTime);
+    //   lastTimePrint = millis();
+    //}
     
 
     dir = calcAngle(x, y, z);
@@ -144,8 +188,8 @@ void loop()
       prevrotations = rotations;
     }    
 
-    //Serial1.printf("dir:%3d total_rotation:%5.2f power:%0.4f\r\n", (int)(dir*360), total_rotation, power);
-    //Serial.printf( "dir:%3d total_rotation:%5.2f power:%0.4f\r\n", (int)(dir*360), total_rotation, power);
+    Serial1.printf("dir:%3d total_rotation:%5.2f power:%0.4f\r\n", (int)(dir*360), total_rotation, power);
+    Serial.printf( "dir:%3d total_rotation:%5.2f power:%0.4f\r\n", (int)(dir*360), total_rotation, power);
    }
 }
 

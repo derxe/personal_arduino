@@ -15,7 +15,7 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #include <SoftwareSerial.h>
 #include "SimpleButton.h"
 #include "esp_timer.h"
-#include "AS5600.h"
+#include "3d_mag_dir_sensor.h"
 #include <Wire.h>
 #include "myTime.h"
 #include <sys/time.h>
@@ -28,7 +28,7 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #include "AHT20_SoftI2C.h"
 
 typedef struct {
-    uint16_t avg;
+    int16_t avg;    // negative errors means errors
     //uint16_t max; // we dont need to log max speed
     int16_t dir;      // from 0 - 360, negative values for errors 
     //uint16_t ts;   // we only log last and first log instead of logging every timestamp
@@ -156,10 +156,11 @@ do {                              \
 
 
 // Define a custom TwoWire instance
-#define AS5600_SDA_PIN             4
-#define AS5600_SCL_PIN             3      
-#define AS5600_POWER_PIN           5
-AS5600 as5600; 
+#define DIR_SENSOR_SDA_PIN 4
+#define DIR_SENSOR_SCL_PIN 3
+#define DIR_SENSOR_POWER_PIN 5
+
+MagDirSensor3D windDirSensor(DIR_SENSOR_SDA_PIN, DIR_SENSOR_SCL_PIN, DIR_SENSOR_POWER_PIN);
 
 #define AHT20_1_PWR_PIN   10
 #define AHT20_1_SDA_PIN   8
@@ -205,66 +206,15 @@ void printVersionAndCompileDate() {
 }
 
 
-void printAS5600Config() {
-  //portENTER_CRITICAL(&timerMux);
-  setPowerDirectionSensor(true);
-  delay(10); // wait for the sensor to boot up 
-
-  AS5600 as = as5600;
-  Serial_println(F("===== AS5600 CONFIGURATION ====="));
-
-  Serial_print(F("I2C Address: ")); Serial_println(as.getAddress());
-  Serial_print(F("Direction: ")); Serial_println(as.getDirection() == AS5600_CLOCK_WISE ? "Clockwise" : "Counter-Clockwise");
-  Serial_print(F("Power Mode: ")); Serial_println(as.getPowerMode());
-  Serial_print(F("Hysteresis: ")); Serial_println(as.getHysteresis());
-
-  Serial_print(F("Output Mode: "));
-  switch (as.getOutputMode())
-  {
-    case AS5600_OUTMODE_ANALOG_100: Serial_println(F("Analog 0–100%")); break;
-    case AS5600_OUTMODE_ANALOG_90:  Serial_println(F("Analog 10–90%")); break;
-    case AS5600_OUTMODE_PWM:        Serial_println(F("PWM")); break;
-    default: Serial_println(F("Unknown")); break;
-  }
-
-  Serial_print(F("PWM Frequency: "));
-  switch (as.getPWMFrequency())
-  {
-    case AS5600_PWM_115: Serial_println(F("115 Hz")); break;
-    case AS5600_PWM_230: Serial_println(F("230 Hz")); break;
-    case AS5600_PWM_460: Serial_println(F("460 Hz")); break;
-    case AS5600_PWM_920: Serial_println(F("920 Hz")); break;
-    default: Serial_println(F("Unknown")); break;
-  }
-
-  Serial_print(F("Slow Filter: ")); Serial_println(as.getSlowFilter());
-  Serial_print(F("Fast Filter: ")); Serial_println(as.getFastFilter());
-  Serial_print(F("Watchdog: ")); Serial_println(as.getWatchDog() ? "ON" : "OFF");
-  Serial_print(F("Z Position: ")); Serial_println(as.getZPosition());
-  Serial_print(F("M Position: ")); Serial_println(as.getMPosition());
-  Serial_print(F("Max Angle: ")); Serial_println(as.getMaxAngle());
-  Serial_print(F("Configure Register: ")); Serial_println(as.getConfigure());
-  Serial_print(F("Offset (degrees): ")); Serial_println(as.getOffset());
-  Serial_print(F("Last Error: ")); Serial_println(as.lastError());
-
-  Serial_println(F("================================"));
-
-  Serial_print(F("Angle: ")); Serial_println(as.readAngle());
-  Serial_println();
-
-  setPowerDirectionSensor(false); 
-  //portEXIT_CRITICAL(&timerMux);
-}
-
 void welcomTurnOnBlink() {
   digitalWrite(SPIN_LED_PIN, LOW);
   digitalWrite(ERROR_LED_PIN, LOW);
   digitalWrite(BLINK_LED_PIN, LOW);
-  delay(1000);
+  delay(500);
   digitalWrite(SPIN_LED_PIN, HIGH);
   digitalWrite(ERROR_LED_PIN, HIGH);
   digitalWrite(BLINK_LED_PIN, HIGH);
-  delay(1000);
+  delay(500);
 }
 
 
@@ -298,7 +248,7 @@ void savePrefs(const AppPrefs& in) {
   int save = store.save(prefs);
   Serial_print("Save status: "); Serial_println(save);
   if (save < 0) {
-    Serial_println("Save failed");
+    Serial_println("ERROR: Save failed");
   }
 }
 
@@ -310,7 +260,7 @@ void loadPreferences() {
   Serial_print("Prefs loaded status: "); Serial_println(loaded);
 
   if (loaded < 0) {
-    Serial_println("Error loading ... saving default preferences");
+    Serial_println("ERROR: Error loading ... saving default preferences");
     savePrefs(prefs);
   } else if(prefsLoaded.load_def_prefs == 1) {
     Serial_println("load_def_prefs = 1, using default preferences.");
@@ -334,7 +284,7 @@ void savePreferences() {
   int save = store.save(prefs);
   Serial_print("Save status: "); Serial_println(save);
   if (save < 0) {
-    Serial_println("Save failed");
+    Serial_println("ERROR: Save failed");
   }
 
   printPreferences();
@@ -353,15 +303,17 @@ void errorLedBlink(uint8_t nblinks, uint16_t blinkDelay=200) {
 }
 
 void checkSensorsConnected() {
-  if(!checkAS5600Connected()) {
-    Serial_println("AS5600 not connected!");
+  if(!windDirSensor.isConnected()) {
+    elog.log(ErrorLogger::ERR_DIR_NOT_CONNECTED);
+    Serial_println("ERROR: Wind direction sensor is not connected!");
     errorLedBlink(2, 300);
     delay(500);
   }
+  windDirSensor.setPower(false); // isConnected turns on the power so we need to turn it off again
 
-  
   if(!speedHalSensor.isConnected()) {
-    Serial_print("speed hal sensor not connected!");
+    elog.log(ErrorLogger::ERR_WIND_NOT_CONNECTED);
+    Serial_println("ERROR: Speed HAL sensor is not connected!");
     errorLedBlink(3, 150);
   }
 
@@ -371,14 +323,13 @@ String version = "2.1";
 bool accurateTimeSet = false;
 bool hasSendAfterTurnOn = false; 
 
-volatile bool enableWatchDogResets = true;
-
 // gets called each 5 seconds and resets the external watchdog timer
 void IRAM_ATTR onResetWatchdogTimer(void* arg) {
-  if(enableWatchDogResets) reset_watchdog_timer();
+    reset_watchdog_timer();
 }
 
 static void reset_watchdog_timer() {
+  pinMode(DONE_PIN, OUTPUT);
   digitalWrite(DONE_PIN, HIGH);
   delay(DONE_PULSE_MS);
   digitalWrite(DONE_PIN, LOW);
@@ -386,12 +337,35 @@ static void reset_watchdog_timer() {
 }
 
 
+void calibrateWindDirectionNorth() {
+  Serial_println("Button send pressed down. Calibrating vane north value!");
+  digitalWrite(SPIN_LED_PIN, HIGH);
+  int angle = 0;
+  windDirSensor.setNorthOffset(0);
+  if(!performFullWindDirRead(angle)) return;
+  digitalWrite(SPIN_LED_PIN, LOW);
+  delay(100);
+  digitalWrite(SPIN_LED_PIN, HIGH);
+  delay(300);
+  digitalWrite(SPIN_LED_PIN, LOW);
+  delay(100);
+  digitalWrite(SPIN_LED_PIN, HIGH);
+  delay(300);
+  digitalWrite(SPIN_LED_PIN, LOW);
+
+  Serial_print("Calibrated north: "); Serial_println(angle);
+
+  windDirSensor.setNorthOffset(angle);
+  windDirSensor.saveNorthOffset();
+}
+
+
+
 void setup() {
   pinMode(BLINK_LED_PIN, OUTPUT);  digitalWrite(BLINK_LED_PIN, HIGH); // on
   delay(500);
 
-  pinMode(DONE_PIN, OUTPUT);
-  reset_watchdog_timer(); // reset watchdog timer
+  reset_watchdog_timer();
 
   hasSendAfterTurnOn = false;
 
@@ -482,9 +456,6 @@ void setup() {
   //pinMode(VANE_POWER_PIN, OUTPUT); digitalWrite(VANE_POWER_PIN, HIGH);  
   //gpio_set_drive_capability((gpio_num_t) VANE_POWER_PIN, GPIO_DRIVE_CAP_3);
 
-  // only needed if the sensor is powered directly from the CPU and not from the MOS
-  pinMode(AS5600_POWER_PIN, OUTPUT); setPowerDirectionSensor(false);  
-  //gpio_set_drive_capability((gpio_num_t) AS5600_POWER_PIN, GPIO_DRIVE_CAP_3);
 
   speedHalSensor.begin();
   buttonInfo.begin(BUTTON_INFO_PIN);
@@ -493,11 +464,20 @@ void setup() {
   buttonSend.begin(BUTTON_SEND_PIN);
   buttonSend.setClickHandler(clickSend);
 
+  windDirSensor.begin();
+
   checkSensorsConnected();
 
-  // init the as5600 chip so we can read wind direction 
-  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN); 
-  Wire.setClock(1000000UL); // 1 Mhz
+  if(buttonSend.isPressedDown()) {
+    // set the north direction if the button send was pressed down on boot
+    calibrateWindDirectionNorth();
+
+    buttonSend.ignoreNextPress(); // we dont want to execute send when we let go of the button
+  } else {
+
+    windDirSensor.loadNorthOffset();
+    Serial_print("Loaded north offset: "); Serial_println(windDirSensor.getNorthOffset());
+  }
 
   aht1.init();
   //aht2.init();
@@ -513,7 +493,7 @@ void setup() {
     .name = "hal_timer"
   };
   esp_timer_handle_t hal_timer;
-  if(prefs.store_wind_data_interval_s > 0) {
+  if(prefs.enable_wind_speed_read > 0 && prefs.store_wind_data_interval_s > 0) {
     esp_timer_create(&hal_timer_args, &hal_timer);
     esp_timer_start_periodic(hal_timer, 4*1000);  // every 4 ms
   }
@@ -562,7 +542,7 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "readSpeed_timer"
   };
-  if(prefs.store_wind_data_interval_s > 0) {
+  if(prefs.enable_wind_speed_read > 0 && prefs.store_wind_data_interval_s > 0) {
     esp_timer_create(&readSpeed_args, &readSpeed_timer);
     esp_timer_start_periodic(readSpeed_timer, 1000 * 1000); // 1s
   }
@@ -574,9 +554,9 @@ void setup() {
     .dispatch_method = ESP_TIMER_TASK,
     .name = "readDirection_timer"
   };
-  if(prefs.as5600_read_interval_s > 0) { 
+  if(prefs.store_wind_data_interval_s > 0 && prefs.wind_dir_read_interval_s > 0) {
     esp_timer_create(&readDirection_args, &readDirection_timer);
-    esp_timer_start_periodic(readDirection_timer, prefs.as5600_pwr_on_time_ms*1000); 
+    esp_timer_start_periodic(readDirection_timer, prefs.wind_dir_read_interval_s*1000*1000ULL);
   }
   
 
@@ -612,7 +592,7 @@ bool readTempHum(AHT20SoftI2C &ahtSensor, float &t, float &h) {
   ahtSensor.setPower(true);
 
   if (!ahtSensor.checkIsConnected()) {
-    Serial_print("Temp sensor"); Serial_print(ahtSensor.id); Serial.println(": is not connected!");
+    Serial_print("ERROR: Temp sensor"); Serial_print(ahtSensor.id); Serial_println(": is not connected!");
     return false;
   }
 
@@ -656,7 +636,11 @@ void IRAM_ATTR onBlinkLed(void* arg) {
   // prevents devision by 0 when changing the preferences 
   if(prefs.blink_led_on_time_ms == 0) digitalWrite(BLINK_LED_PIN, LOW);
 
-  uint16_t toggleCount = prefs.blink_led_interval_ds*100 / prefs.blink_led_on_time_ms;
+  // if the device is not light sleeping blink faster
+  #define NO_SLEEP_BLINK_INTERVAL 500  // ms 
+  uint16_t blinkInterval = !isLightSleep() ? NO_SLEEP_BLINK_INTERVAL : prefs.blink_led_interval_ds*100;
+  uint16_t toggleCount = blinkInterval / prefs.blink_led_on_time_ms;
+
   if(nOnBlinkLedcalls % toggleCount == 0) {
     digitalWrite(BLINK_LED_PIN, HIGH);    
   } else {
@@ -689,135 +673,66 @@ void IRAM_ATTR onErrorLed(void* arg) {
 }
 
 
+bool performFullWindDirRead(int& angle) {
+  if(windDirSensor.isConnected() == false) {
+    //Serial_println("ERROR: Wind direction sensor is not connected!");
+    error_notify_led = 1;
+    return false;
+  }
+
+  windDirSensor.setPower(true); // tehnically not needed since isConnected enables power ... 
+  bool success = windDirSensor.read();
+  windDirSensor.setPower(false);
+
+  if(success == false) {
+    //Serial_println("ERROR: Failed to read wind direction sensor!");
+    error_notify_led = 1;
+    elog.logTmp(ErrorLogger::ERR_DIR_READ);
+    return false;
+  }
+
+  float magPower = windDirSensor.getPower();
+  if(magPower < 5) {
+      elog.logTmp(ErrorLogger::ERR_DIR_MAG_WEAK);
+      //Serial_print("ERROR: Magnet to weak < 5: mag:"); Serial_println(magPower);
+      error_notify_led = 1;
+      return false;
+  }
+
+  angle = windDirSensor.getDirection();
+  return true;
+}
+
+
 #define DIRECTIONS_LOG_LEN 10  // buffer to store diractions before the are averaged and saved in an array to be send 
-int last_direction_read = -1;
 int directions_log[DIRECTIONS_LOG_LEN];
 volatile int directions_log_i = 0;
-
-
-//#define AS5600_PWR_ON_TIME   60 
-//#define AS5600_READ_INTERVAL 3000 // ms how ofter we want to read direction
-//#define AS5600_IR_CYCLES     AS5600_READ_INTERVAL / AS5600_PWR_ON_TIME  // Interupt cycles before powering on and reading the sensor again 
-
-bool checkAS5600Connected() {
-  Wire.end();
-
-  // when we give power to the sensor the we 
-  // can measure the pulldownd on the sensor board to see if it is connected at all 
-
-  setPowerDirectionSensor(true);
-  pinMode(AS5600_SCL_PIN, INPUT_PULLDOWN);
-  pinMode(AS5600_SDA_PIN, INPUT_PULLDOWN);
-  delayMicroseconds(20); // wait to settle
-
-  int sda_read = digitalRead(AS5600_SDA_PIN);
-  int scl_read = digitalRead(AS5600_SCL_PIN);
-
-  if(!sda_read) elog.logTmp(ErrorLogger::ERR_DIR_SDA_NOT_CONN);
-  if(!scl_read) elog.logTmp(ErrorLogger::ERR_DIR_SCL_NOT_CONN);
-  //Serial_print("sda: "); Serial_println(sda_read);
-  //Serial_print("scl: "); Serial_println(scl_read);
-
-  // restore I2C
-  pinMode(AS5600_SDA_PIN, INPUT);
-  pinMode(AS5600_SCL_PIN, INPUT);
-  Wire.begin(AS5600_SDA_PIN, AS5600_SCL_PIN);
-  Wire.setClock(1000000UL);
-
-  return sda_read && scl_read;
-}
-
-void setPowerDirectionSensor(bool enable) {
-  if(enable) {
-    digitalWrite(AS5600_POWER_PIN, LOW);
-  } else {
-    digitalWrite(AS5600_POWER_PIN, HIGH);
-  }
-}
+int last_direction_read = -1; // used to display on auto refresh stream
 
 void IRAM_ATTR onReadDirection(void* arg) {
-  static int directionReadCount = 0; 
-  int angle = 0;
-  int8_t as5600_error = 0;
-  #define MAGNET_READ_REPEATS 4
-  int8_t readRepeats;
+  int angle = -1;
 
-  uint16_t ir_cycles = (prefs.as5600_read_interval_s*1000 / prefs.as5600_pwr_on_time_ms);
-
-  //Serial.flush();
-  if(directionReadCount == 1) {
-    setPowerDirectionSensor(true);
-
-    if(!checkAS5600Connected()) {
-      //Serial_println("Dir sensor not conn");
-      elog.logTmp(ErrorLogger::ERR_DIR_NOT_CONNECTED);
-      directionReadCount = 3; // skip the next step where the magnet is actually read
-      setPowerDirectionSensor(false);// the sensor is not connected so turn it off again
-      error_notify_led = 1;
-    }
+  if(!performFullWindDirRead(angle)) {
+    Serial_println("ERROR: Error reading wind direction");
+    elog.logTmp(ErrorLogger::ERR_DIR_READ);
+    return;
   }
 
-  else if(directionReadCount == 2) {
-    #ifdef PRINT_MAGNET_READ_DEBUG
-    Serial_print("Adress: "); Serial_println(as5600.getAddress());
-    Serial_print("Is connectet: "); Serial_println(as5600.isConnected());
-    Serial_print("Magnet magnitude: "); Serial_println(as5600.readMagnitude());
-    Serial_print("Detect magnet: "); Serial_println(as5600.detectMagnet());
-    Serial_print("magnetTooStrong: "); Serial_println(as5600.magnetTooStrong());
-    Serial_print("magnetTooWeak: "); Serial_println(as5600.magnetTooWeak());
-    #endif
-    
-    readRepeats = MAGNET_READ_REPEATS;
-    do {
-      angle = as5600.readAngle()*360 / 4096;
-      as5600_error = as5600.lastError();
-
-      //if(as5600_error != 0) elog.log(ErrorLogger::ERR_DIR_READ_ONCE);
-      //DBG_MNG( Serial_print("Read angle: "); Serial_print(angle); Serial_print(" "); Serial_println(as5600_error); );
-    } while(as5600_error != 0 && --readRepeats > 0);
-
-    int magMagnitude = as5600.readMagnitude();
-    if(magMagnitude < 20) {
-      as5600_error = 10; // random error number that is not already used by the as5600 lib, not important as long as it not 0
-      elog.logTmp(ErrorLogger::ERR_DIR_MAG_WEAK);
-      DBG_MNG( Serial_print("Magnet to weak < 50: mag:"); Serial_println(magMagnitude); );
-    } 
-      
-    if(as5600_error == 0) {
-      // successful angle read
-      last_direction_read = angle;
-      if(millis() < 1000*60) {// only log for first 60 s
-        DBG_MNG( Serial_print("Read angle: "); Serial_println(angle); );
-        Serial_print("Read angle: "); Serial_println(angle); 
-      }
-
-      portENTER_CRITICAL_ISR(&timerMux);
-      if(directions_log_i < DIRECTIONS_LOG_LEN) {
-        // save the measurement inside the log
-        directions_log[directions_log_i++] = angle;
-      } else {
-        elog.logTmp(ErrorLogger::ERR_DIR_SHORT_BUF_FULL);
-      }
-      portEXIT_CRITICAL_ISR(&timerMux);
-
-    } else {
-      last_direction_read = as5600_error; // no angle was succesfully read due to an error
-      //Serial_print("Read angle error: ");
-      //Serial_println(as5600_error);
-      error_notify_led = 1;
-      
-      elog.logTmp(ErrorLogger::ERR_DIR_READ);
-    }
-    
-    setPowerDirectionSensor(false);
+  if(millis() < 1000*60) { // only log for first 60 s
+    Serial_print("Read wind direction: "); Serial_println(angle);
   }
 
-  // reset the directionReadCount when we hit the ir_cycles 
-  else if(directionReadCount == ir_cycles) {
-    directionReadCount = 0;
+  portENTER_CRITICAL(&timerMux);
+  if(directions_log_i < DIRECTIONS_LOG_LEN) {
+    // save the measurement inside the log
+    directions_log[directions_log_i++] = angle;
+    last_direction_read = angle;
+  } else {
+    elog.logTmp(ErrorLogger::ERR_DIR_SHORT_BUF_FULL);
   }
+  portEXIT_CRITICAL(&timerMux);
 
-  directionReadCount++;
+  
 }
 
 
@@ -833,17 +748,17 @@ void IRAM_ATTR onReadHal(void* arg) {
   uint32_t now = micros() / 1000;
 
   if (halSensorRead != lastHalSensorRead && halSensorRead == LOW) {
-    portENTER_CRITICAL_ISR(&timerMux);
+    portENTER_CRITICAL(&timerMux);
     rotationCount ++;                    // number of rotations counted, used to average rps every second in a diferent interupt
     rotation_detected_blink = 1;
 
-    #ifdef PRINT_SPEED
-      Serial_print("|");
-    #endif
     if(lastDetection != 0 && now > lastDetection) {
       rps += 1000.0f / (now - lastDetection);
     }
-    portEXIT_CRITICAL_ISR(&timerMux);
+    portEXIT_CRITICAL(&timerMux);
+    #ifdef PRINT_SPEED
+      Serial_print("|");
+    #endif
     lastDetection = now;
   }
   lastHalSensorRead = halSensorRead;
@@ -858,24 +773,27 @@ int16_t lastSpeedRead = -1;
 
 // read speed every second
 void IRAM_ATTR onReadSpeed(void* arg) {
-  portENTER_CRITICAL_ISR(&timerMux);
+  portENTER_CRITICAL(&timerMux);
 
   float speed = rotationCount == 0 ? 0 : rps / rotationCount;
-  #ifdef PRINT_SPEED
-    Serial_print("Speed: "); Serial_print(speed * 10);
-    Serial_print(", cnt:"); Serial_println(rotationCount);
-  #endif
   rotationCount = 0;
   rps = 0;
 
   if (speeds_log_i < SPEEDS_LOG_LEN) {
     speeds_log[speeds_log_i++] = int(speed * 10);
     lastSpeedRead = int(speed * 10);
+    portEXIT_CRITICAL(&timerMux);
   } else {
+    portEXIT_CRITICAL(&timerMux);
     elog.logTmp(ErrorLogger::ERR_WIND_SHORT_BUF_FULL);
   }
 
-  portEXIT_CRITICAL_ISR(&timerMux);
+  
+
+  #ifdef PRINT_SPEED
+    Serial_print("Speed: "); Serial_print(speed * 10);
+    Serial_print(", cnt:"); Serial_println(rotationCount);
+  #endif
 }
 
 
@@ -914,6 +832,7 @@ uint16_t windlog_oldest_index(void) {
 
 // Store one record (overwrites the oldest when full)
 void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
+    portENTER_CRITICAL(&timerMux);
     wind_log[w_head].avg  = avg;
     //wind_log[w_head].max  = max;
     wind_log[w_head].dir  = dir;
@@ -925,8 +844,10 @@ void windlog_push(uint16_t avg, int16_t dir, uint32_t ts) {
     w_head = (uint16_t)((w_head + 1) % prefs.wind_log_store_len);
     if (w_count < prefs.wind_log_store_len) {
         w_count++;
+        portEXIT_CRITICAL(&timerMux);
     } else{
       first_timestamp += prefs.store_wind_data_interval_s; // just increase the fist timestamp by the expected interval that timestamps increase (by interval )
+      portEXIT_CRITICAL(&timerMux);
       // buffer full -> oldest is implicitly dropped
       elog.logTmp(ErrorLogger::ERR_WIND_BUF_OVERWRITE);
     }
@@ -978,33 +899,51 @@ float average_direction(const int* directions_log, size_t len) {
 }
 
 
+uint16_t speeds_copy[SPEEDS_LOG_LEN];
+int directions_copy[DIRECTIONS_LOG_LEN];
 
 void IRAM_ATTR onStoreWindData(void* arg) {
+  uint32_t timestamp = get_log_timestamp(); // we need to get the timestamp before critical section!
+
+  int speeds_count;
+  int directions_count;
+  bool set_start_time = false;
+
   portENTER_CRITICAL(&timerMux);
   // store the miliseconds of when the first data got stored 
   if(wind_data_start_time == 0) wind_data_start_time = lastNow;
 
+  // copy the data in to temporery buffer to work with it 
+  // not save to work with the data in the critical section due to using logError and sin functions
+  speeds_count = speeds_log_i;
+  if (speeds_count > SPEEDS_LOG_LEN) speeds_count = SPEEDS_LOG_LEN;
+  memcpy(speeds_copy, speeds_log, speeds_count * sizeof(speeds_copy[0]));
+  speeds_log_i = 0;
+
+  directions_count = directions_log_i;
+  if (directions_count > DIRECTIONS_LOG_LEN) directions_count = DIRECTIONS_LOG_LEN;
+  memcpy(directions_copy, directions_log, directions_count * sizeof(directions_copy[0]));
+  directions_log_i = 0;
+
+  portEXIT_CRITICAL(&timerMux);
+
   // the log is full so we calculate average and save the measurement into the avg log
   //uint16_t maxSpeed = 0;
   int avgSpeedSum = 0;
-  for(int i=0; i<speeds_log_i; i++) {
+  for(int i=0; i<speeds_count; i++) {
     //maxSpeed = max(maxSpeed, speeds_log[i]);
-    avgSpeedSum += speeds_log[i]; 
+    avgSpeedSum += speeds_copy[i]; 
   }
 
-  int avgSpeed = speeds_log_i == 0 ? 0 : avgSpeedSum / speeds_log_i;
-  speeds_log_i = 0;
+  // if there is no speeds logged store -1
+  int avgSpeed = speeds_count == 0 ? -1 : avgSpeedSum / speeds_count;
 
   // if there is no directions_log set the value to -1 so that we know that no value was read
-  int16_t avgDir = directions_log_i == 0 ? -1 : average_direction(directions_log, directions_log_i);
-  directions_log_i = 0;
-  
-  uint32_t timestamp = get_log_timestamp();;
+  int16_t avgDir = directions_count == 0 ? -1 : average_direction(directions_log, directions_count);
 
   //windlog_push(avgSpeed, maxSpeed, avgDir, timestamp);
   windlog_push(avgSpeed, avgDir, timestamp);
-  portEXIT_CRITICAL_ISR(&timerMux);
-
+  
   #ifdef PRINT_ON_STORE_WIND 
     Serial_print("Updated wind data, avg:"); Serial_print(avgSpeed);
     Serial_print(", dir:"); Serial_print(avgDir);
@@ -1014,9 +953,9 @@ void IRAM_ATTR onStoreWindData(void* arg) {
 
 WindSample wind_log_copy[WIND_LOG_STORE_LEN];
 String getWindData() {
-  portENTER_CRITICAL_ISR(&timerMux);
+  portENTER_CRITICAL(&timerMux);
   uint16_t wind_log_copy_len = windlog_copy(wind_log_copy, WIND_LOG_STORE_LEN);
-  portEXIT_CRITICAL_ISR(&timerMux);
+  portEXIT_CRITICAL(&timerMux);
 
   //int speed_avg_i_on_send = 0;
   //speed_avg_i_on_send = speed_avg_i; // we save the index on when we send the data so we can see if there is any new data when we restart the index after successful send 
@@ -1046,7 +985,7 @@ String getWindData() {
 
 
 bool isSleepHour(int start, int end, int hour) {
-  if (start == 100 && end == 100) return true; // special case where we force the device to sleep all the time to basically never wake up
+  if (start == 0 && end == 0 && prefs.sleep_enabled == 2) return true; // special case where we force the device to sleep all the time to basically never wake up
   if (start > end) 
     return start <= hour || hour < end;
   else
@@ -1129,6 +1068,11 @@ bool isLightSleep() {
 FloatRunningAverage<32> vBattAvg;
 FloatRunningAverage<8> vSolarAvg;
 
+bool isVoltageHighEnoughToPerformSend() {
+  float vBatt = vBattAvg.get();
+  return vBatt > 3.3;  
+}
+
 
 uint32_t lastSend = 0;
 uint32_t lastSuccessfulSend = 0;
@@ -1147,7 +1091,13 @@ void loop() {
   if(isTimeToSendData(secSinceLastSend)) {
     lastSend = millis();
     Serial_println(String(secSinceLastSend) + " s passed doing send");
-    fullCycleSend();
+
+    if(isVoltageHighEnoughToPerformSend()) {
+      fullCycleSend();
+    } else {
+      Serial_println("ERROR: Battery voltage too low to send");
+      elog.log(ErrorLogger::ERR_SEND_V_BATT_TOO_LOW);
+    }
   }
 
   // read battery voltage every 5s
@@ -1166,7 +1116,7 @@ void loop() {
   // check if the station was unable to send the data for longer then 1 hour 
   #define NO_SEND_FORCE_RESET_TIME  1*60*60*1000
   if(millis() - lastSuccessfulSend > NO_SEND_FORCE_RESET_TIME) { 
-    Serial1.println("Unable to send the data for longer then 1 hour, force resetting.");
+    Serial1.println("ERROR: Unable to send the data for longer then 1 hour, force resetting.");
     elog.log(ErrorLogger::ERR_CANT_SEND_FORCE_RST); 
     esp_restart();  // software reset
   }
@@ -1240,9 +1190,6 @@ float hum_out = NAN;
 
 bool isOn = false;
 void clickInfo() {
-  enableWatchDogResets = !enableWatchDogResets;
-  Serial_print("Watchdog enabled: "); Serial_println(enableWatchDogResets);
-  
   printPreferences();
   printDiagnosticInfo();
 }
@@ -1258,29 +1205,29 @@ void readTempSensors() {
   hum_out = NAN;
   bool tempReadSuccess = false;
 
-  if (prefs.read_temp_enabled & 0x01 > 0) {
-    tempReadSuccess = readTempHum(aht1, temp_in, hum_in);
-    if (!tempReadSuccess) {
-      elog.log(ErrorLogger::ERR_TEMP_READ);
-    } else {
-      Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
-      Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
-    }
-  } else {
-    Serial_print("Temperature INside reading disabled by prefs.read_temp_enabled:");
-    Serial_println(prefs.read_temp_enabled);
-  }
-
-  if (prefs.read_temp_enabled & 0x02 > 0) {
+  if ((prefs.read_temp_enabled & 0x01) > 0) {
     tempReadSuccess = readTempHum(aht1, temp_out, hum_out);
     if (!tempReadSuccess) {
-      elog.log(ErrorLogger::ERR_TEMP_READ);
+      elog.log(ErrorLogger::ERR_TEMP_READ_OUT);
     } else {
       Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
       Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
     }
   } else {
     Serial_print("Temperature OUTside reading disabled by prefs.read_temp_enabled:");
+    Serial_println(prefs.read_temp_enabled);
+  }
+
+  if ((prefs.read_temp_enabled & 0x02) > 0) {
+    tempReadSuccess = readTempHum(aht2, temp_in, hum_in);
+    if (!tempReadSuccess) {
+      elog.log(ErrorLogger::ERR_TEMP_READ_IN);
+    } else {
+      Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
+      Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
+    }
+  } else {
+    Serial_print("Temperature INside reading disabled by prefs.read_temp_enabled:");
     Serial_println(prefs.read_temp_enabled);
   }
 
@@ -1313,7 +1260,7 @@ void fullCycleSend() {
     } else {
       logSendErrorForResult(r);
       elog.log(ErrorLogger::ERR_SEND_REPEAT);
-      Serial_print("Send failed: ");
+      Serial_print("ERROR: Send failed: ");
       Serial_println(sendResultToStr(r)); // human-readable reason
       error_notify_led = 1;
     }
@@ -1346,7 +1293,7 @@ void printDiagnosticInfo() {
   temp_in = NAN; hum_in = NAN;
   success = readTempHum(aht1, temp_in, hum_in);
   if (!success) {
-    Serial_println("temp1 failed to read"); 
+    Serial_println("ERROR: temp1 failed to read"); 
   } else {
     Serial_print("temp_in:"); Serial_println(String(temp_in, 1));
     Serial_print("humy_in:"); Serial_println(String(hum_in, 1));
@@ -1356,26 +1303,16 @@ void printDiagnosticInfo() {
   temp_out = NAN; hum_out = NAN;
   success = readTempHum(aht1, temp_out, hum_out);
   if (!success) {
-    Serial_println("temp2 failed to read"); 
+    Serial_println("ERROR: temp2 failed to read"); 
   } else {
     Serial_print("temp_out:"); Serial_println(String(temp_out, 1));
     Serial_print("humy_out:"); Serial_println(String(hum_out, 1));
   }
   
-
-  // Serial_println("wind data: " + getWindData());
-  // TODO implement idk Serial_println("last_dir_read: " + String(last_direction_read));
-
-  // read AS5600 angle:
-  setPowerDirectionSensor(true); delay(20); // turn it on and wait for the sensor to boot up
-  int angle = as5600.readAngle() * 360 / 4096;
-  int error = as5600.lastError();
-  if(error == 0) {
-    Serial_print(F("AS600 Angle: ")); Serial_println(angle);
-  } else {
-    Serial_print(F("AS600 Angle: Read error: ")); Serial_println(error);
-  }
-
+  int angle = -1;
+  performFullWindDirRead(angle);
+  Serial_print(F("Wind dir angle: ")); Serial_println(angle);
+  
   String postBody = getPostBody();
   Serial_print("Post body (len=");
   Serial_print(postBody.length());
@@ -1481,7 +1418,7 @@ String sendCommand(const String& command, int timeoutMs = 1000, String expectedR
 
 void setPhoneNumber(String& inputBuffer) {
   String digits = "";
-  for(int i=1; i<inputBuffer.length(); i++) {
+  for(int i=0; i<inputBuffer.length(); i++) {
     if (isDigit(inputBuffer[i])) digits += inputBuffer[i];
   }
 
@@ -1774,7 +1711,7 @@ void parseReturnData(String& data) {
 
     if(key == "no_reset") shouldReset = false; 
     else if(key == "no_send_prefs") shouldSendPrefs = false; 
-    else if(key == "set_phone_num") setPhoneNumber(value);
+    else if(key == "set_phone_num" || key == "phoneNum") setPhoneNumber(value);
     else if(key == "send_error_names") shouldSendErrorNames = true;
     else if(key == "send_stream_for_s") send_stream_for_s = value.toInt();
     else {
@@ -1853,7 +1790,7 @@ bool waitForResponse(const String& command,
 
     if (!responseOk) {
       if (millis() - start > timeoutS*1000) {
-        Serial_print(" Command: '"); Serial_print(command); 
+        Serial_print("ERROR: Command: '"); Serial_print(command); 
         Serial_println("' timeouted, aborting.");
         return false;
       }
@@ -1877,6 +1814,16 @@ String zeros(int length) {
 }
 
 
+float getVBattAvg() {
+  float battAvg = vBattAvg.get();
+  return isnan(battAvg) ?  read_batt_v() : battAvg; 
+}
+
+float getVSolarAvg() {
+  float solarAvg = vSolarAvg.get();
+  return isnan(solarAvg) ? read_solar_v() : solarAvg;
+}
+
 String getPostBody() {
   String body = "";
   body.reserve(512);   // avoid fragmentation, improve speed
@@ -1890,9 +1837,9 @@ String getPostBody() {
   if (!isnan(hum_in))   body += "hum_in=" + String(hum_in, 0) + ";";
   if (!isnan(temp_out)) body += "temp_out=" + String(temp_out, 1) + ";";
   if (!isnan(hum_out))  body += "hum_out=" + String(hum_out, 0) + ";";
-  body += "vbatIde=" + String(vBattAvg.get(), 3) + ";";
+  body += "vbatIde=" + String(getVBattAvg(), 3) + ";";
   body += "vbatGprs=" + String(read_batt_v(), 3) + ";";
-  body += "vsol=" + String(vSolarAvg.get(), 3) + ";"; 
+  body += "vsol=" + String(getVSolarAvg(), 3) + ";"; 
   body += "dur=" + String((millis() - httpGetStart) / 1000.0, 1) + ";";
   body += "signal=" + String(signalStrength) + ";";
 
@@ -1902,57 +1849,6 @@ String getPostBody() {
   //body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
   if (elog.getNErrorsLogged() > 0) body += "errors=" + elog.getAllForSend() + ";";
   body += getWindData();
-
-  return body;
-}
-
-String getPostErrorsList() {
-  String body;
-  body.reserve(768);
-  body += "ERR_NONE=0;";
-
-  // ---- SEND / GSM / HTTP ----
-  body += "ERR_SEND_AT_FAIL=1;";
-  body += "ERR_SEND_NO_SIM=2;";
-  body += "ERR_SEND_CSQ_FAIL=3;";
-  body += "ERR_SEND_REG_FAIL=4;";
-  body += "ERR_SEND_CCLK_FAIL=5;";
-  body += "ERR_SEND_CIMI_FAIL=6;";
-  body += "ERR_SEND_GPRS_FAIL=7;";
-  body += "ERR_SEND_HTTP_FAIL_DATA=8;";
-  body += "ERR_SEND_UNKWN_FAIL=10;";
-  body += "ERR_SEND_REPEAT=11;";
-  body += "ERR_SEND_FAIL_WRONG_RESPONSE=12;";
-  body += "ERR_SEND_PREFS_HTTP_FAIL=13;";
-  body += "ERR_SEND_PREFS_HTTP_FAIL_RESPONSE=14;";
-  body += "ERR_SEND_ERRORS_HTTP_FAIL=15;";
-  body += "ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE=16;";
-
-  // ---- DIR / I2C ----
-  body += "ERR_DIR_READ=20;";
-  body += "ERR_DIR_READ_ONCE=21;";
-  body += "ERR_DIR_NOT_CONNECTED=22;";
-  body += "ERR_DIR_SHORT_BUF_FULL=23;";
-  body += "ERR_DIR_SDA_NOT_CONN=24;";
-  body += "ERR_DIR_SCL_NOT_CONN=25;";
-  body += "ERR_DIR_MAG_WEAK=26;";
-
-  // ---- WIND ----
-  body += "ERR_WIND_BUF_OVERWRITE=30;";
-  body += "ERR_WIND_SHORT_BUF_FULL=31;";
-
-  // ---- TEMP ----
-  body += "ERR_TEMP_READ=40;";
-
-  // ---- POWER / RESET ----
-  body += "ERR_RESET_BROWNOUT=52;";
-  body += "ERR_RESET_PANIC=53;";
-  body += "ERR_RESET_WDT=54;";
-  body += "ERR_RESET_UNEXPECTED=55;";
-  body += "ERR_CANT_SEND_FORCE_RST=56;";
-
-  body += "LOG_RESET_SW=70;";
-  body += "LOG_RESET_POWERON=71;";
 
   return body;
 }
@@ -2053,7 +1949,7 @@ void sendStream(int durationSec) {
     bool postSuccess = sendGET(url);
 
     if (!postSuccess) {
-      Serial_print("Sending stream data failed!");
+      Serial_print("ERROR: Sending stream data failed!");
     } else {
       Serial_print("Stream data sent OK");
     }
@@ -2082,7 +1978,7 @@ SendResult runHttpGetHot(int nTry) {
 
   unsigned long start = millis();
   if (!waitForResponse("AT+CSMINS?", prefs.sim_timeout_s, parseCSMINSResponse, 100)) {
-    Serial_println("No Sim detected!.");
+    Serial_println("ERROR: No Sim detected!.");
     return SendResult::NO_SIM;
   }
   simDuration = millis() - start;
@@ -2162,13 +2058,13 @@ SendResult runHttpGetHot(int nTry) {
     Serial_println("Sending preferences");
     bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefsAll());
     if (!postSuccess) {
-      Serial_print("Sending preferences failed!");
+      Serial_print("ERROR: Sending preferences failed!");
       elog.log(ErrorLogger::ERR_SEND_PREFS_HTTP_FAIL);
     } else {
       waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
 
       if (postReturnData.indexOf("saved:") < 0) {
-        Serial_println("Sending preferences failed wrong response!");
+        Serial_println("ERROR: Sending preferences failed wrong response!");
         elog.log(ErrorLogger::ERR_SEND_PREFS_HTTP_FAIL_RESPONSE);
       } else {
         Serial_println("Sending prefs OK!");
@@ -2179,15 +2075,16 @@ SendResult runHttpGetHot(int nTry) {
   if(shouldSendErrorNames) {
     Serial_println();
     Serial_println("Sending error names");
-    bool postSuccess = sendPOST(prefs.url_errors + imsiNum, getPostErrorsList());
+    String errorsList = ErrorLogger::getPostErrorsList();
+    bool postSuccess = sendPOST(prefs.url_errors + imsiNum, errorsList);
     if (!postSuccess) {
-      Serial_println("Sending errors failed!");
+      Serial_println("ERROR: Sending errors failed!");
       elog.log(ErrorLogger::ERR_SEND_ERRORS_HTTP_FAIL);
     } else {
       waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
 
       if (postReturnData.indexOf("saved:") < 0) {
-        Serial_println("Sending errors failed wrong response!");
+        Serial_println("ERROR: Sending errors failed wrong response!");
         elog.log(ErrorLogger::ERR_SEND_ERRORS_HTTP_FAIL_RESPONSE);
       } else {
         Serial_println("Sending errors OK!");
@@ -2229,11 +2126,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
-
-
-
-
 
 
 

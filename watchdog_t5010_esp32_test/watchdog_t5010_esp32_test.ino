@@ -31,11 +31,11 @@ static void send_done_pulse() {
 
 
 void setup() {
-  Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
-  while (!Serial) delay(1);
-
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
+
+  Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
+  while (!Serial) delay(1);
 
   bootCount++;
   Serial.printf("\r\n\r\nBoot #%lu\r\n", (unsigned long)bootCount);
@@ -90,7 +90,7 @@ void setup() {
   rtc_gpio_pullup_dis((gpio_num_t)WAKE_PIN);
   rtc_gpio_pulldown_dis((gpio_num_t)WAKE_PIN);
 
-  #define SLEEP_TIME_SEC (60*30)
+  #define SLEEP_TIME_SEC (60)
 
   esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_PIN, 1); // 1 = wake when HIGH :contentReference[oaicite:1]{index=1}
   esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_TIME_SEC * 1000000ULL);
@@ -105,7 +105,7 @@ void loop() {
   unsigned long now = millis();
   static unsigned long lastCall = 0;
 
-  if (now - lastCall >= 4*1000) {
+  if (now - lastCall >=  4*1000) {
     lastCall = now;
     
     bool override_active = (digitalRead(OVERRIDE_PIN) == LOW);

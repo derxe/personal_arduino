@@ -147,8 +147,8 @@ struct AppPrefs {
   uint8_t  blink_led_on_time_ms;    // ms blink LED stays on when blinking (<=0 disables)
   uint8_t  blink_led_interval_ds;   // deciseconds (0.1 s) between blink cycles
 
-  uint8_t  as5600_pwr_on_time_ms;   // ms to wait after power on before reading (also an interrupt cycle)
-  uint16_t as5600_read_interval_s;  // seconds between direction reads (0 disables)
+  uint16_t wind_dir_read_interval_s;  // seconds between direction reads (0 disables)
+  int8_t   enable_wind_speed_read;  // set to <= 0 to disable it 
 
   uint8_t  read_temp_enabled;       // 0 disables temp1/temp2 reads during send, 1-enables temp 1, 2-enables temp2, 3-enables both of them
 
@@ -161,16 +161,16 @@ AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
   /*load_def_prefs*/            0,      // should be always 0 unless we want to use default preferences every reset
-  /*version*/                   "v2.0",
+  /*version*/                   "v2.1",
 
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",
   /*url_errors*/                "http://46.224.24.144/veter/save_error/",
   /*url_stream*/                "http://46.224.24.144/veter/stream/",
 
-  /*light_sleep_enabled*/       2, 
+  /*light_sleep_enabled*/       1, 
   /*sleep_enabled*/             0,
-  /*sleep_dur_min*/             60,
+  /*sleep_dur_min*/             30,
   /*sleep_2_send_interval_s*/   20, 
   /*sleep_hour_start*/          18,     // time hours
   /*sleep_hour_end*/            6,      // time hours
@@ -182,9 +182,9 @@ AppPrefs prefs = {
 
   /*at_timeout_s*/              10,     
   /*sim_timeout_s*/             20,     
-  /*csq_timeout_s*/             120,    
-  /*creg_timeout_s*/            120,    
-  /*cgreg_timeout_s*/           120,    
+  /*csq_timeout_s*/             60,    
+  /*creg_timeout_s*/            60,    
+  /*cgreg_timeout_s*/           60,    
 
   /*error_led_on_time_ms*/      10,  
   /*dir_led_on_time_ms*/        10,  
@@ -192,13 +192,13 @@ AppPrefs prefs = {
   /*blink_led_on_time_ms*/      20,  
   /*blink_led_interval_ds*/     20,  // deciseconds (0.1 s)
 
-  /*as5600_pwr_on_time_ms*/     20, 
-  /*as5600_read_interval_s*/    3,    
+  /*wind_dir_read_interval_s*/    3,    
+  /*enable_wind_speed_read*/      1,
 
-  /*read_temp_enabled*/         3,
+  /*read_temp_enabled*/         1,
 
   /*vbat_calib*/                0.0006355, 
-  /*vsolar_calib*/              0.0013187,
+  /*vsolar_calib*/              0.0013695,
 };
 
 void printPreferences() {
@@ -241,8 +241,8 @@ void printPreferences() {
   Serial_print("  blink_led_interval_ds: ");  Serial_println(prefs.blink_led_interval_ds);
   Serial_println();
 
-  Serial_print("  as5600_pwr_on_time_ms:   "); Serial_println(prefs.as5600_pwr_on_time_ms);
-  Serial_print("  as5600_read_interval_s: "); Serial_println(prefs.as5600_read_interval_s);
+  Serial_print("  wind_dir_read_interval_s: "); Serial_println(prefs.wind_dir_read_interval_s);
+  Serial_print("  enable_wind_speed_read:   "); Serial_println(prefs.enable_wind_speed_read);
   Serial_println();
 
   Serial_print("  read_temp_enabled:          "); Serial_println(prefs.read_temp_enabled);
@@ -294,11 +294,11 @@ bool saveNewPrefValue(String key, String value) {
   else if(key == "spin_led_on_time_ms") {
     prefs.spin_led_on_time_ms = value.toInt();
   }
-  else if(key == "as5600_pwr_on_time_ms") {
-    prefs.as5600_pwr_on_time_ms = value.toInt();
+  else if(key == "wind_dir_read_interval_s") {
+    prefs.wind_dir_read_interval_s = value.toInt();
   }
-  else if(key == "as5600_read_interval_s") {
-    prefs.as5600_read_interval_s = value.toInt();
+  else if(key == "enable_wind_speed_read") {
+    prefs.enable_wind_speed_read = value.toInt();
   }
   else if(key == "light_sleep_enabled") {
     prefs.light_sleep_enabled = value.toInt();
@@ -402,13 +402,13 @@ String getPostBodyPrefs() {
   body += "blink_led_on_time_ms=" + String(prefs.blink_led_on_time_ms) + ";";
   body += "blink_led_interval_ds=" + String(prefs.blink_led_interval_ds) + ";";
 
-  body += "as5600_pwr_on_time_ms=" + String(prefs.as5600_pwr_on_time_ms) + ";";
-  body += "as5600_read_interval_s=" + String(prefs.as5600_read_interval_s) + ";";
+  body += "wind_dir_read_interval_s=" + String(prefs.wind_dir_read_interval_s) + ";";
+  body += "enable_wind_speed_read=" + String(prefs.enable_wind_speed_read) + ";";
 
   body += "wind_log_store_len=" + String(prefs.wind_log_store_len) + ";";
 
-  body += "vbat_calib=" + String(prefs.vbat_calib) + ";";
-  body += "vsolar_calib=" + String(prefs.vsolar_calib) + ";";
+  body += "vbat_calib=" + String(prefs.vbat_calib, 9) + ";";
+  body += "vsolar_calib=" + String(prefs.vsolar_calib, 9) + ";";
 
   body += "err_ver=" + String(ErrorLogger::ERROR_CODE_VERSION) + ";";
 

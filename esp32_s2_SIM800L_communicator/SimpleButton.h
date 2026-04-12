@@ -16,8 +16,16 @@ public:
         _handler = handler;
     }
 
+    bool isPressedDown() {
+        return digitalRead(_pin) == LOW;
+    }
+
+    void ignoreNextPress() {
+        _ignorePress = true;
+    }
+
     void loop() {
-        bool pressed = digitalRead(_pin) == LOW;
+        bool pressed = isPressedDown();
 
         unsigned long now = millis();
 
@@ -28,7 +36,10 @@ public:
         if (!pressed && _lastPressed) {
             if (now - _pressStart >= 10) {
                 if (_handler) {
-                    _handler();
+                    if(!_ignorePress) {
+                        _handler();
+                    }
+                    _ignorePress = false;
                 }
             }
         }
@@ -40,5 +51,6 @@ private:
     uint8_t _pin = 0;
     bool _lastPressed = false;
     unsigned long _pressStart = 0;
+    bool _ignorePress = false;
     ClickHandler _handler = nullptr;
 };

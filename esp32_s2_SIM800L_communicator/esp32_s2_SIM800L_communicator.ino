@@ -19,7 +19,6 @@ SerialMod0 SerialUart0(UART_NUM_0, UART_DEBUG_SIM_TX_PIN, UART_DEBUG_SIM_RX_PIN)
 #include <Wire.h>
 #include "myTime.h"
 #include <sys/time.h>
-#include <Preferences.h>
 #include "ErrorLogger.h"
 #include "ResetDiagnostics.h"
 #include "MyPrefs.h"
@@ -41,10 +40,20 @@ enum class SendResult : int {
   CSQ_FAIL             = -3,   // CSQ failed
   REG_FAIL             = -4,   // CREG? or CGREG? failed (both map here)
   CCLK_FAIL            = -5,   // failed getting time
-  CIMI_FAIL            = -6,   // CIMI failed
-  GPRS_SETUP_FAIL      = -7,   // any SAPBR step failed
-  HTTP_FAIL            = -8,   // sendPOSTData / HTTPREAD failed
+  CLTS_NOT_SET         = -6,   // CLTS value was set to 0 (setting for getting time from the server )
+  CIMI_FAIL            = -7,   // CIMI failed
+  GPRS_SETUP_FAIL      = -8,   // any SAPBR step failed
+  HTTP_FAIL            = -9,   // sendPOSTData / HTTPREAD failed
 };
+
+enum class TcpStatus : int {
+  CONNECTING = 1,
+  CLOSED,
+  CONNECT_OK,
+  UNKNOWN,
+  TIMEOUT,
+};
+
 
 //#define PRINT_SIM_COMM 
 //#define PRINT_MAGNET_READ_DEBUG
@@ -189,6 +198,7 @@ void IRAM_ATTR onResetWatchdogTimer(void* arg);
 
 void clickInfo();
 void clickSend();
+SendResult runHttpGetHot(int nTry);
 
 #define DEEP_SLEEP_DURATION  (3600ULL * 1000*1000) // value in microseconds so: one hour
 //#define DEEP_SLEEP_DURATION  5*60 * 1000 * 1000  // 20 seconds
@@ -242,7 +252,6 @@ ErrorLogger elog;
 
 // pass in BUILD_UNIX_TIME so that we update the preferences on each new compile 
 PrefBlob<AppPrefs> store(BUILD_UNIX_TIME);
-bool sendPrefsOnNextSend = false; 
 
 void savePrefs(const AppPrefs& in) {
   int save = store.save(prefs);
@@ -259,13 +268,14 @@ void loadPreferences() {
   int loaded = store.load(prefsLoaded);
   Serial_print("Prefs loaded status: "); Serial_println(loaded);
 
-  if (loaded < 0) {
+  if (loaded == -7) {
+    Serial_println("First boot using/saving default preferences");
+    savePrefs(prefs);
+  } else if (loaded < 0) {
     Serial_println("ERROR: Error loading ... saving default preferences");
     savePrefs(prefs);
   } else if(prefsLoaded.load_def_prefs == 1) {
     Serial_println("load_def_prefs = 1, using default preferences.");
-    sendPrefsOnNextSend = true;  // force send preferences on next send so we see which default preference were send
-    
     savePrefs(prefs); // save the newly set flag
   } else {
     Serial_println("Prefs loaded ok! Using that"); 
@@ -439,7 +449,7 @@ void setup() {
     evaluateIfDeepSleep();
   }
 
-  SerialAT.begin(115200, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
+  SerialAT.begin(9600, SERIAL_8N1, SIM_RX_PIN, SIM_TX_PIN);
 
   pinMode(GPRS_ON_PIN, OUTPUT); POWER_GPRS_BOARD_OFF();
   pinMode(GPRS_POWER_PIN, OUTPUT); digitalWrite(GPRS_POWER_PIN, HIGH); // off
@@ -713,7 +723,7 @@ void IRAM_ATTR onReadDirection(void* arg) {
   int angle = -1;
 
   if(!performFullWindDirRead(angle)) {
-    Serial_println("ERROR: Error reading wind direction");
+    //Serial_println("ERROR: Error reading wind direction");
     elog.logTmp(ErrorLogger::ERR_DIR_READ);
     return;
   }
@@ -1387,10 +1397,8 @@ bool updateSerial() {
   #define DBG_CMD(...) do {} while (0)
 #endif
 
-String sendCommand(const String& command, int timeoutMs = 1000, String expectedResponse = "OK") {
-  SerialAT.println(command);
 
-  DBG_CMD( Serial_print("#Command: "); Serial_println(command); );
+String waitForATResponse(int timeoutMs, const String& expectedResponse) {
   unsigned long start = millis();
   String response = "";
 
@@ -1399,7 +1407,10 @@ String sendCommand(const String& command, int timeoutMs = 1000, String expectedR
       char c = SerialAT.read();
       response += c;
 
-      DBG_CMD( Serial_write(c); ); 
+      char c_print = c;
+      if(c_print == '\n') c_print = '.';
+      if(c_print == '\r') c_print = ',';
+      DBG_CMD( Serial_write(c_print); ); 
 
       // Early exit if we detect "OK"
       if (response.indexOf(expectedResponse) != -1) {
@@ -1409,10 +1420,25 @@ String sendCommand(const String& command, int timeoutMs = 1000, String expectedR
     }
     delay(1); // Yield to avoid tight spinning
   }
+
   #ifdef PRINT_SIM_COMM
   Serial_println("norsps?");
-  Serial_print("Response: '"); Serial_print(response); Serial_println("'");
+  //Serial_print("Response: '"); Serial_print(response); Serial_println("'");
   #endif 
+
+  return response;
+}
+
+String sendCommand(const String& command, int timeoutMs = 1000, const String& expectedResponse = "OK") {
+  DBG_CMD( Serial_println() );
+  emptySerialAT();
+  SerialAT.println(command);
+
+  DBG_CMD( Serial_print("#Command: "); Serial_println(command); );
+  
+  String response = waitForATResponse(timeoutMs, expectedResponse);
+
+  //DBG_CMD( Serial_print("##Response: '"); Serial_print(response); Serial_println("'") );
   return response;
 }
 
@@ -1445,7 +1471,7 @@ const char* regStatusToStr(int status) {
   }
 }
 
-bool parseCSQResponse(const String& response) {
+bool parseCSQResponse(String& response) {
   int idx = response.indexOf("+CSQ:");
   if (idx == -1) return false;
 
@@ -1469,7 +1495,7 @@ bool parseCSQResponse(const String& response) {
   return rssi > 0 && rssi < 99; // 99 = unknown or no signal
 }
 
-bool parseCGREGResponse(const String& response) {
+bool parseCGREGResponse(String& response) {
   int idx = response.indexOf("REG:");
   if (idx == -1) return false;
 
@@ -1490,7 +1516,7 @@ bool parseCGREGResponse(const String& response) {
 
 String imsiNum; 
 
-bool parseCIMIResponse(const String& response) {
+bool parseCIMIResponse(String& response) {
   int cmd = response.indexOf("AT+CIMI");
   if (cmd == -1) return false;
 
@@ -1580,7 +1606,7 @@ void shiftTimestampsOnNewTime(int newHour, int newMinute, int newSecond) {
 }
 
 
-bool parseCCLKResponse(const String& response) {
+bool parseCCLKResponse(String& response) {
   // expected response example: +CCLK: "25/08/01,00:19:52+08"
   int idx = response.indexOf("CCLK:");
   if (idx == -1) return false;
@@ -1613,6 +1639,20 @@ bool parseCCLKResponse(const String& response) {
   
   return true;
 }
+
+bool parseCLTSResponse(String& response) {
+  // expected response example: +CLTS: 1 or +CLTS: 0
+  int idx = response.indexOf("+CLTS:");
+  if (idx == -1) return false;
+
+  // Extract the char after "+CLTS:"
+  char clts_val = response[idx + 7];
+
+  //Serial_println("got clts value: " + String(clts_val));
+  return clts_val == '1';
+}
+
+
 
 Preferences prefsStorage;
 static const char *PREF_NAMESPACE = "time";
@@ -1734,7 +1774,7 @@ void parseReturnData(String& data) {
 }
 
 String postReturnData;
-bool parseHTTPREADResponse(const String& response) {
+bool parseHTTPREADResponse(String& response) {
   int startIdx = response.indexOf("+HTTPREAD:");
   if (startIdx == -1) {
     Serial_println("No +HTTPREAD header found");
@@ -1769,7 +1809,7 @@ bool parseHTTPREADResponse(const String& response) {
   return true;
 }
 
-bool parseCSMINSResponse(const String& response) {
+bool parseCSMINSResponse(String& response) {
   int idx = response.indexOf("+CSMINS:");
   if (idx == -1) return false;
 
@@ -1778,7 +1818,7 @@ bool parseCSMINSResponse(const String& response) {
 
 bool waitForResponse(const String& command,
                      unsigned long timeoutS,
-                     bool (*parseFn)(const String&),
+                     bool (*parseFn)(String&),
                      unsigned long retryDelay = 1000) {
   String response = "";
   unsigned long start = millis();
@@ -1861,7 +1901,11 @@ String waitForHttpActionResponse(unsigned long timeoutMs) {
   while (millis() - start < timeoutMs) {
     while (SerialAT.available()) {
       char c = SerialAT.read();
-      Serial_write(c);
+      char c_print = c;
+      if(c_print == '\n') c_print = '.';
+      if(c_print == '\r') c_print = ',';
+      DBG_CMD( Serial_write(c_print); ); 
+
       if (c == '\n') {
         if (line.startsWith("+HTTPACTION:")) {
           return line;
@@ -1910,6 +1954,7 @@ const char* sendResultToStr(SendResult r) {
     case SendResult::CSQ_FAIL:        return "CSQ failed";
     case SendResult::REG_FAIL:        return "Network registration failed";
     case SendResult::CCLK_FAIL:       return "get time failed";
+    case SendResult::CLTS_NOT_SET:    return "clts vale not set";
     case SendResult::CIMI_FAIL:       return "get imi num failed";
     case SendResult::GPRS_SETUP_FAIL: return "GPRS setup failed";
     case SendResult::HTTP_FAIL:       return "HTTP failed";
@@ -1924,6 +1969,7 @@ void logSendErrorForResult(SendResult r) {
     case SendResult::CSQ_FAIL:        elog.log(ErrorLogger::ERR_SEND_CSQ_FAIL);  break;
     case SendResult::REG_FAIL:        elog.log(ErrorLogger::ERR_SEND_REG_FAIL);  break;
     case SendResult::CCLK_FAIL:       elog.log(ErrorLogger::ERR_SEND_CCLK_FAIL); break;
+    case SendResult::CLTS_NOT_SET:    elog.log(ErrorLogger::ERR_SEND_CCLK_FAIL); break; // TODO set this new error key!!
     case SendResult::CIMI_FAIL:       elog.log(ErrorLogger::ERR_SEND_CIMI_FAIL); break;
     case SendResult::GPRS_SETUP_FAIL: elog.log(ErrorLogger::ERR_SEND_GPRS_FAIL); break;
     case SendResult::HTTP_FAIL:       elog.log(ErrorLogger::ERR_SEND_HTTP_FAIL_DATA); break;
@@ -1970,6 +2016,250 @@ String getPostBodyPrefsAll() {
   return body;
 }
 
+String emptySerialAT() {
+  String data_before_send = "";
+  while (SerialAT.available()) {
+    char c = SerialAT.read();
+    DBG_CMD( Serial_write(c); );
+    if(c == '\n') c = '.';
+    if(c == '\r') c = ',';
+    data_before_send += c;
+  }
+
+  #ifdef PRINT_SIM_COMM
+  if(data_before_send.length() > 0) {
+    Serial_print("data before send: '"); Serial_print(data_before_send); Serial_println("'");
+  }
+  #endif 
+  return data_before_send;
+}
+
+
+bool parseParamsResponse(
+    String& response,
+    const String& expectedResCommand,
+    int parameters[],
+    int maxParameters,
+    int& parametersCount
+) {
+    parametersCount = 0;
+
+    int okPos = response.lastIndexOf("\r\nOK");
+    if (okPos == -1) return false;
+
+    int cmdPos = response.lastIndexOf(expectedResCommand);
+    if (cmdPos == -1) return false;
+
+    int lineEnd = response.indexOf("\n", cmdPos);
+    if (lineEnd == -1) lineEnd = response.length();
+
+    String params = response.substring(cmdPos + expectedResCommand.length(), lineEnd);
+    params.trim();
+
+    while (params.length() > 0 && parametersCount < maxParameters) {
+        int commaPos = params.indexOf(',');
+
+        if (commaPos == -1) { // handle the last paramters in the line
+            parameters[parametersCount++] = params.toInt();;
+            break;
+        }
+
+        parameters[parametersCount++] = params.substring(0, commaPos).toInt();
+        params = params.substring(commaPos + 1);
+    }
+
+    response = response.substring(lineEnd+1, okPos); // return the remaining string after the paramters
+
+    // print the parsed parameters
+    //for(int i=0; i<parametersCount; i++) {
+    //  Serial_print("Param: "); Serial_println(parameters[i]);
+    //} 
+
+    return true;
+}
+
+
+bool parseCIPRXGET4(String& response) {
+  int params_int[4]; 
+  int params_cnt = 0;
+
+  // expected response: 
+  // +CIPRXGET: 4,19 where the second int is the num of bytes that has been sent by the server and not yet read
+  bool parseSuccess  = parseParamsResponse(response, "+CIPRXGET: ", params_int, 4, params_cnt);
+  if(!parseSuccess) return false;
+  if(params_cnt != 2) return false;
+
+  int data_to_read = params_int[1];
+  Serial_print("Got server response ");  Serial_print(data_to_read);  Serial_println(" bytes");  
+  return data_to_read > 0;
+}
+
+
+
+TcpStatus getTCPStatus(unsigned long timeoutMs=3000) {
+  String response = sendCommand("AT+CIPSTATUS", 1000);
+
+  unsigned long start = millis();
+  String line = "";
+
+  while (millis() - start < timeoutMs) {
+    while (SerialAT.available()) {
+      char c = SerialAT.read();
+      //char c_print = c;       
+      //if(c_print == '\n') c_print = '.';
+      //if(c_print == '\r') c_print = ',';
+      //DBG_CMD( Serial_write(c_print); ); 
+
+      if (c == '\n') {
+        if (line.startsWith("STATE:")) {
+          String tcpStatusStr = line.substring(7); // remove the "state:" from the string 
+          Serial_print("Got tcpStatus: '");  Serial_print(tcpStatusStr);  Serial_println("'"); 
+          
+          if(tcpStatusStr == "CONNECT OK") return TcpStatus::CONNECT_OK;
+          if(tcpStatusStr == "TCP CLOSED") return TcpStatus::CLOSED;
+          if(tcpStatusStr == "TCP CONNECTING") return TcpStatus::CONNECTING;
+          else return TcpStatus::UNKNOWN;
+        }
+        line = "";  // reset for next line
+      } else if (c != '\r') {
+        line += c;
+      }
+    }
+  }
+
+  Serial_println("Timeout getting tcpStatus!");
+  return TcpStatus::TIMEOUT;  // timeout
+}
+
+
+
+TcpStatus checkTCPstatus() {
+  TcpStatus tcpStatus;
+  
+  for(int retry = 0; retry<8; retry++) {
+    tcpStatus = getTCPStatus();
+
+    if(tcpStatus == TcpStatus::CONNECT_OK) return TcpStatus::CONNECT_OK;
+    if(tcpStatus == TcpStatus::CLOSED) return TcpStatus::CLOSED;
+    
+    // dont do anything on any other statues wait a bit and ask again 
+    delay(300);
+  }
+
+  return tcpStatus; // return the last read TCP status
+}
+
+
+String sendTCPData(const String& dataToSend, bool waitForReply=true) {
+  Serial_println("\r\n>> Sending TCP data:");
+
+  TcpStatus tcpStatus = checkTCPstatus();
+  if(tcpStatus == TcpStatus::CLOSED) {
+    // TODO log TCP closed error cant connect to the server
+    return "";
+  }
+
+  if(tcpStatus != TcpStatus::CONNECT_OK) {
+    // TODO log unable to get correct TCP status here
+    return "";
+  }
+ 
+  String response = sendCommand("AT+CIPSEND", 1000, "> ");
+  if(!response.endsWith("> ")) {
+    Serial_print("Got wrong response from CIPSEND. Response: '");  Serial_print(response);  Serial_println("'");   
+    // TODO log chip send error failed here 
+    return "";
+  }
+  
+  Serial_print("Ready to send ");  Serial_print(dataToSend.length());  Serial_println(" bytes");   
+  Serial_print("Sending: '");  Serial_print(dataToSend);  Serial_println("'"); 
+  sendCommand(dataToSend + "\x1A");
+  Serial_println("Done sending!");
+
+  if(!waitForReply) {
+    return "";
+  }
+
+  if(!waitForResponse("AT+CIPRXGET=4", 10, parseCIPRXGET4, 300)) {
+    // TODO make 10 seconds wait time from server configurable
+    // TODO TCP log no response from server here
+    return "";
+  }
+
+  response = sendCommand("AT+CIPRXGET=2,256", 2000);
+  int params_int[4]; 
+  int params_cnt = 0;
+  parseParamsResponse(response, "+CIPRXGET: ", params_int, 4, params_cnt);
+
+  return response;
+}
+
+
+bool sendTCP_break_into_packets(const String& data) {
+  int offset = 0;
+  int pos = 0;
+  const int packetSize = 400; // TODO make this a preference
+
+  while (pos < data.length()) {
+      int len = min(packetSize, ((int) data.length()) - pos);
+      String packet = data.substring(pos, pos + len);
+      
+      String response = sendTCPData(packet);
+
+      if(response == "") {
+        // TODO log error unable to send TCP data
+        return false;
+      }
+
+      int pckStart = response.indexOf("GOT|");
+      if(pckStart == -1) {
+        // TODO log unable to get correct response from the server 
+        Serial_println("Failed to get GOT from the response. Error sending!");
+        return false;
+      }
+
+      int numEnd = response.indexOf("|", pckStart+4);
+      int srvRecievedLen = response.substring(pckStart+4, numEnd).toInt();
+
+      if(srvRecievedLen != packet.length()) {
+        // TODO log unable to get correct response from the server 
+        Serial_println("Failed sneding TCP packet not matching len from the server!");
+        return false;
+      }
+
+      Serial_print("Srver response: '"); Serial_print(response); Serial_println("'");
+      pos += len;
+      offset += len;
+  }
+
+  return true;
+}
+
+
+void sendStreamTCP(int durationSec) {
+  enableErrorLedBlinking = false;
+
+  uint32_t start = millis();
+  Serial_println("Starting stream sending for " + String(durationSec) + " seconds...");
+  while(millis() - start < durationSec*1000) {
+    digitalWrite(ERROR_LED_PIN, HIGH); 
+
+    String streamData = 
+                  "ts=" + String(get_log_timestamp()) + 
+                  "&spd=" + String(lastSpeedRead) + 
+                  "&dir=" + String(last_direction_read) +
+                  "&bat=" + String(read_batt_v(), 2);
+
+    const bool waitForResponse = false;
+    sendTCPData("stream|" + streamData + "|done", waitForResponse);
+    
+    digitalWrite(ERROR_LED_PIN, LOW);
+    delay(500);
+  }
+
+  enableErrorLedBlinking = true;
+}
+
 
 SendResult runHttpGetHot(int nTry) {
   Serial_println("\n\nExecuting HTTP HOT...");
@@ -1993,22 +2283,90 @@ SendResult runHttpGetHot(int nTry) {
   if (!waitForResponse("AT+CGREG?", prefs.cgreg_timeout_s, parseCGREGResponse, 500)) return SendResult::REG_FAIL;
   gprsRegDuration = millis() - start;
 
-  if (!waitForResponse("AT+CCLK?", 10, parseCCLKResponse, 500)) {
-    // probably missing automatic time update NITZ
+  if (!waitForResponse("AT+CLTS?", 30, parseCLTSResponse, 500)) {
+    // clts is not set to 1, setting it and restarting the module
     sendCommand("AT+CLTS=1");
     sendCommand("AT&W");
-
-    if(nTry == 0) {
-      // first try so we will repeat the sending and see if we can actually get the time next time
-      return SendResult::CCLK_FAIL;
-    }
+    return SendResult::CLTS_NOT_SET;
   }
 
+  if (!waitForResponse("AT+CCLK?", 30, parseCCLKResponse, 500)) {
+    return SendResult::CCLK_FAIL;
+  }
+
+  // get IMSI number 
   if (!waitForResponse("AT+CIMI", 10, parseCIMIResponse, 500)) return SendResult::CIMI_FAIL;
   Serial_print("Got IMSI:"); Serial_println(imsiNum);
 
+  // get phone number
   readPhoneNum();
   Serial_print("Got phone Num:"); Serial_println(phoneNum);
+
+  // start TCP connection 
+  // prepare for the TCP communication 
+  if (sendCommand("AT+CIPSHUT", 1000) == "") return SendResult::GPRS_SETUP_FAIL;  // reset the TCP stack 
+  if (sendCommand("AT+CIPRXGET=1", 1000) == "") return SendResult::GPRS_SETUP_FAIL;  // set the data to be read manually
+  if (sendCommand("AT+CSTT=\"internet.simobil.si\",\"simobil\",\"internet\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL; 
+  if (sendCommand("AT+CIICR", 2000) == "") return SendResult::GPRS_SETUP_FAIL;  // bring up wireless data (activate PDP context)
+  sendCommand("AT+CIFSR", 1000, "\r\n"); // Get your IP address, we should get our IP address. if not If it fails 
+
+  if (sendCommand("AT+CIPSTART=\"TCP\",\"46.224.24.144\",\"64562\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL; 
+
+  //String imsiResponse = sendTCPData("imsi|" + imsiNum + "|done");
+  //Serial_print("Got sending imsi response: '"); Serial_print(imsiResponse); Serial_println("'");
+  //parseReturnData(imsiResponse);
+
+
+  String postBodyData = getPostBody();
+  const String dataPacket = "data|" + imsiNum + "|" + String(postBodyData.length()) + "|" + postBodyData + "|done";
+  if(!sendTCP_break_into_packets(dataPacket)) {
+    // TODO log tcp error sending data
+    return SendResult::HTTP_FAIL; 
+  }
+
+  String prefsResponse = sendTCPData("gotprefs?|done");
+  Serial_print("Got preferences response: '"); Serial_print(prefsResponse); Serial_println("'");
+  parseReturnData(prefsResponse);
+
+  if(shouldSendPrefs) {
+    Serial_println();
+    Serial_println("Sending preferences");
+
+    String prefsBody = getPostBodyPrefsAll();
+    String prefsPacket = "prefs|" + String(prefsBody.length()) + "|" + prefsBody + "|done";
+    if(!sendTCP_break_into_packets(prefsPacket)) {
+      // TODO log tcp error sending data
+      return SendResult::HTTP_FAIL; 
+    }
+  }
+
+  if(shouldSendErrorNames) {
+    Serial_println();
+    Serial_println("Sending error names");
+
+    String errorsBody = ErrorLogger::getPostErrorsList();
+    String errorsPacket = "errors|" + String(errorsBody.length()) + "|" + errorsBody + "|done";
+    if(!sendTCP_break_into_packets(errorsPacket)) {
+      // TODO log tcp error sending data
+      return SendResult::HTTP_FAIL; 
+    }
+  }
+
+  if(send_stream_for_s > 0) {
+    sendStreamTCP(send_stream_for_s);
+  }
+  send_stream_for_s = 0;
+
+  const bool waitForReply = false;
+  sendTCPData("END", waitForReply);
+
+  // close the connection 
+  sendCommand("AT+CIPCLOSE=1", 1000);
+
+
+  /*
+  
+
 
   // Step 1: Configure GPRS connection
   if (sendCommand("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"", 1000) == "") return SendResult::GPRS_SETUP_FAIL;
@@ -2031,7 +2389,7 @@ SendResult runHttpGetHot(int nTry) {
 
   if (!sendPOST(prefs.url_data + imsiNum, getPostBody())) return SendResult::HTTP_FAIL;
   
-  waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse);
+  waitForResponse("AT+HTTPREAD", 5, parseHTTPREADResponse); // TODO make this http read timeout configurable 
 
   if(postReturnData.indexOf("saved:") < 0) {
     // expected "saved:" in the response if it is not there the response from the server was incorrect
@@ -2042,18 +2400,17 @@ SendResult runHttpGetHot(int nTry) {
   if(!postReturnData.isEmpty()) {
     parseReturnData(postReturnData);
   }
-  
-  elog.clearAll(); // clear all the errors so they are not send again
-  windlog_clear();
 
   if(send_stream_for_s > 0) {
     sendStream(send_stream_for_s);
   }
   send_stream_for_s = 0;
 
+  
 
-  if(shouldSendPrefs || sendPrefsOnNextSend) {
-    sendPrefsOnNextSend = false;
+
+
+  if(shouldSendPrefs) {
     Serial_println();
     Serial_println("Sending preferences");
     bool postSuccess = sendPOST(prefs.url_prefs + imsiNum, getPostBodyPrefsAll());
@@ -2092,6 +2449,17 @@ SendResult runHttpGetHot(int nTry) {
     }
   }
 
+  // Step 5: Cleanup
+  sendCommand("AT+HTTPTERM");
+  sendCommand("AT+SAPBR=0,1");
+
+  Serial_print("Success!");
+  */
+
+  elog.clearAll(); // clear all the errors so they are not send again
+  windlog_clear();
+
+
   if(shouldReset) {
     Serial_println("Reseting the module to apply the settings soon.\n\n");
     saveTimeAndScheduleReset();
@@ -2099,11 +2467,7 @@ SendResult runHttpGetHot(int nTry) {
     Serial_println("No reset requested");
   }
 
-  // Step 5: Cleanup
-  sendCommand("AT+HTTPTERM");
-  sendCommand("AT+SAPBR=0,1");
 
-  Serial_print("Success!");
   
   /*
   portENTER_CRITICAL(&timerMux);
@@ -2126,8 +2490,6 @@ SendResult runHttpGetHot(int nTry) {
 
   return SendResult::OK;
 }
-
-
 
 
 

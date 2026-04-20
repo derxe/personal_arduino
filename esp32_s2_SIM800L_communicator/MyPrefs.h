@@ -38,7 +38,7 @@ public:
 
     const Header* hdr = reinterpret_cast<const Header*>(buf.get());
     if (hdr->magic != MAGIC) return -5;
-    if (hdr->size  != sizeof(T)) return -6;         // struct size changed
+    if (hdr->size  != sizeof(T)) return -6;                    // struct size changed
     if (hdr->compile_time != _compile_time) return -7;         // stored newer than firmware
 
     const uint8_t* payload = buf.get() + sizeof(Header);
@@ -161,7 +161,7 @@ AppPrefs prefs = {
   /*pref_version*/              0,
   /*pref_set_date*/             0, 
   /*load_def_prefs*/            0,      // should be always 0 unless we want to use default preferences every reset
-  /*version*/                   "v2.1",
+  /*version*/                   "v2.2",
 
   /*url_data*/                  "http://46.224.24.144/veter/save/",
   /*url_prefs*/                 "http://46.224.24.144/veter/save_prefs/",

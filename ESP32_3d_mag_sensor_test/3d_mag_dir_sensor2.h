@@ -130,14 +130,13 @@ public:
         constexpr float twoPi = 6.28318530718f;
 
         float angle = atan2f(static_cast<float>(z_), static_cast<float>(x_));
-        angle = -angle;   // flip to clockwise rotation, so that N:0, E:90 S:180, W:270
         angle /= twoPi;
 
         if (angle < 0.0f) {
             angle += 1.0f;
         }
 
-        return ((int)(angle * 360) + 360 - northOffsetDeg_) % 360;
+        return (int)(angle*360);
     }
 
     float getMagnetPower() const {

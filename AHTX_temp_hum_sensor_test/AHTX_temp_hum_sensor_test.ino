@@ -52,7 +52,7 @@ bool readTempHum(AHT20SoftI2C &ahtSensor, float &t, float &h) {
   int readStatus = 0;
   int retries = 10;
   for(int i=0; i<retries; i++) {
-    readStatus = ahtSensor.aht20_read(t, h);
+    readStatus = ahtSensor.read(t, h);
     //Serial.printf("Read status: %d\r\n", readStatus);
     if(readStatus == 1) break; 
     delay(30);

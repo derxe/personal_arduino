@@ -13,7 +13,8 @@
 //using namespace ifx::tlx493d;
 //TLx493D_A1B6 dut(Wire1, TLx493D_IIC_ADDR_A0_e);
 
-#include "3d_mag_dir_sensor.h"
+#include "3d_mag_dir_sensor2.h"
+#include "ResetDiagnostics.h"
 
 #define SDA_PIN             4
 #define SCL_PIN             3      
@@ -23,6 +24,10 @@ MagDirSensor3D sensor(SDA_PIN, SCL_PIN, POWER_PIN);
 
 #define UART_TX_PIN  39
 #define UART_RX_PIN  37 
+
+
+#define MAIN_BTN_PIN   40
+#define RESET_HOLD_MS  30
 
 
 static bool readLowPowerSample(double *x, double *y, double *z, double *t) {
@@ -40,13 +45,43 @@ void setup()
 {
   Serial1.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
   Serial.begin(115200);
-  Serial.print("Hello world");
+  while(!Serial1 && !Serial) delay(100);
+  Serial1.println("\r\n\r\nProgram start");
   Serial1.println(__FILE__);
   Serial1.println();
 
   pinMode(POWER_PIN, OUTPUT);
   digitalWrite(POWER_PIN, LOW);
+  pinMode(MAIN_BTN_PIN, INPUT_PULLUP);
 
+  ResetInfo ri = readResetInfo();
+
+  switch (ri.reason) {
+    case ESP_RST_BROWNOUT:       
+      Serial1.println("ESP_RST_BROWNOUT"); break;
+
+    case ESP_RST_PANIC:          
+      Serial1.print("ESP_RST_PANIC"); break;
+
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:            
+      Serial1.print("ESP_RST_INT_WDT"); break;
+
+    default:                     
+      Serial1.print("UNKNOWN RESTART"); break;
+
+    /* expected bootups  */
+    case ESP_RST_POWERON:        
+       Serial1.print("ESP_RST_POWERON"); break;
+
+    case ESP_RST_SW:        
+       Serial1.print("ESP_RST_SW"); break;
+
+    case ESP_RST_DEEPSLEEP:   
+      Serial1.print("ESP_RST_DEEPSLEEP"); break;             
+      break;
+  }
 
   //Wire.begin();
   //Wire1.begin(SDA_PIN, SCL_PIN, 4000000);
@@ -54,7 +89,7 @@ void setup()
   //dut.begin();
   //dut.setPowerMode(TLx493D_LOW_POWER_MODE_e);
 
-  sensor.begin(1000000UL);
+  sensor.begin(100000UL);
 
   delay(1000);
 }
@@ -72,7 +107,7 @@ float calcAngle(float x, float y, float z) {
     return angle;
 }
 
-float calcMagnetPower(float x, float y, float z) {
+float calcMagnetPower(float x, float y, float z) {                   
     (void)y; // ignore y
     return sqrtf(x * x + z * z);
 }
@@ -84,30 +119,39 @@ float power;
 void loop() {
   static uint32_t lastTime = 0;
   static float prevDir = -1;
+  static uint32_t resetPressedAt = 0;
 
-  if (millis() - lastTime >= 300) {
+  if (digitalRead(MAIN_BTN_PIN) == LOW) {
+    if (resetPressedAt == 0) {
+      resetPressedAt = millis();
+    } else if (millis() - resetPressedAt >= RESET_HOLD_MS) {
+      Serial1.println("Main button pressed, restarting...");
+      Serial.println("Main button pressed, restarting...");
+      delay(20);
+      ESP.restart();
+    }
+  } else {
+    resetPressedAt = 0;
+  }
+
+  if (millis() - lastTime >= 1000) {
     lastTime = millis();
 
+    Serial1.println("\n\rStart to read magnet!"); delay(5);
     
-    if(!sensor.isConnected()) {
-      Serial1.println("Sensor not connected!");
-      return;
-    }
-
-    
-    sensor.enablePower(true);
     uint32_t startTime = micros();
-    if(!sensor.read()) {
-      Serial1.println("Sensor read failed!");
-      return;
-    }
-    //sensor.enablePower(false);
+    
+    MagDirSensor3D::ReadStatus readStatus;
 
+    readStatus = sensor.read();
+    if(readStatus != MagDirSensor3D::ReadStatus::OK) {
+      Serial1.printf("Sensor read failed! readStatus:%d\r\n", readStatus);
+    }
      
     //delay(2);
     
     int direction = sensor.getDirection();
-    power = sensor.getPower();
+    power = sensor.getMagnetPower();
     
 
     uint32_t endTime = micros();
@@ -147,7 +191,7 @@ void loop2()
 
   //  update every 100 ms
   //  should be enough up to ~200 RPM
-  if (millis() - lastTime >= 200)
+  if (millis() - lastTime >= 1000)
   {
     lastTime = millis();
     double t, x, y, z;

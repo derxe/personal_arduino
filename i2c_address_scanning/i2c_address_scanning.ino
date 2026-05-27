@@ -14,9 +14,9 @@ const int i2c_SCL_PIN  = 21;   // your custom SCL pin
 // DEAFULT pins are SDA=33 SCL=35
 
 //const int PIN_VIN      = 40;   // power to AHT20 (optional, can use 3V3 instead)
-const int i2c_SDA_PIN  = 11;   // your custom SDA pin
-const int i2c_SCL_PIN  = 12;   // your custom SCL pin
-
+const int i2c_SDA_PIN  = 4;   // your custom SDA pin
+const int i2c_SCL_PIN  = 3;   // your custom SCL pin
+#define POWER_PIN 5
 
 #include <Arduino.h>
 #include "driver/gpio.h"  // for gpio_set_drive_capability
@@ -47,6 +47,7 @@ const int i2c_SCL_PIN  = 12;   // your custom SCL pin
 
 void doScan() {
   Serial.println("I2C scanner. Scanning ...");
+
   byte count = 0;
 
   //Serial.printf("SDA=%d SCL=%d\n", (int)SDA, (int)SCL);
@@ -90,6 +91,8 @@ void doScan2() {
   Serial.println("I2C scanner 2. Scanning ...");
   byte count = 0;
 
+
+
   //Serial.printf("SDA=%d SCL=%d\n", (int)SDA, (int)SCL);
 
   for (byte i = 8; i < 120; i++) {
@@ -129,6 +132,9 @@ void doScan2() {
 //#define AS600_POWER_PIN 4
 
 void setup() {
+  pinMode(POWER_PIN, OUTPUT);
+  digitalWrite(POWER_PIN, LOW);
+
   //pinMode(AS600_POWER_PIN, OUTPUT);
   //digitalWrite(AS600_POWER_PIN, HIGH);
   //gpio_set_drive_capability((gpio_num_t) AS600_POWER_PIN, GPIO_DRIVE_CAP_3);
@@ -142,11 +148,11 @@ void setup() {
 
   Serial1.begin(9600, SERIAL_8N1, 7, 9);
 
-  Wire.begin(1, 2, 400000);
-  pinMode(3, OUTPUT);  digitalWrite(3, HIGH);
+  Wire.begin(SDA_PIN, SCL_PIN, 400000);
+  //pinMode(3, OUTPUT);  digitalWrite(3, HIGH);
 
-  Wire1.begin(11, 8, 400000);
-  pinMode(9, OUTPUT);  digitalWrite(9, HIGH);
+  //Wire1.begin(11, 8, 400000);
+  //pinMode(9, OUTPUT);  digitalWrite(9, HIGH);
 
   //Wire1.begin(37, 39, 400000);
   //Wire1.begin(7, 8, 400000);
@@ -155,7 +161,7 @@ void setup() {
 
 void loop() {
   doScan();
-  doScan2();
+  //doScan2();
   delay(1000);
   static int on = 1;
   pinMode(15, OUTPUT);  digitalWrite(15, on? HIGH : LOW);

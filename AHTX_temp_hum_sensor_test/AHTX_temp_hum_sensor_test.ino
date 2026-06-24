@@ -16,7 +16,7 @@ AHT20SoftI2C aht1(AHT20_1_SDA_PIN, AHT20_1_SCL_PIN, AHT20_1_PWR_PIN, 1);
 AHT20SoftI2C aht2(AHT20_2_SDA_PIN, AHT20_2_SCL_PIN, AHT20_2_PWR_PIN, 2);
 
 void setup() {
-  Serial.begin(115200, SERIAL_8N1, TX_PIN, TX_PIN);
+  Serial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   while (!Serial) delay(1);
 
   // Power sensor from GPIOs (optional)
